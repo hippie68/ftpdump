@@ -54,18 +54,21 @@ realpath() {
 }
 
 # Decrypts and downloads a single FTP file $1, overwriting existing files
-# $2: byte range to download (optional)
+# (optional: $2: bytes to skip, $3: bytes to download)
 dump_file() {
   local new_file=${1##*/}
   local range
 
-  if [[ $2 != "" ]]; then
-    range="--range $2"
-  fi
-
   echo "$new_file"
-  curl $curl_verbose --silent --ignore-content-length "$1" \
-    --output "$new_file" $range || abort "cURL error $?"
+
+  if [[ $2 != "" ]]; then
+    curl $curl_verbose --silent --ignore-content-length "$1" \
+      | dd "$dd_options" skip="$2" count="$3" 2>/dev/null > "$new_file" || \
+      abort "Error code $?"
+  else
+    curl $curl_verbose --silent --ignore-content-length "$1" \
+      --output "$new_file" || abort "cURL error $?"
+  fi
 }
 
 # Recursively downloads an FTP directory (this functionality is missing in cURL)
@@ -219,7 +222,7 @@ dump_and_extract_pkg() {
 
   # Test how much PKG data should be downloaded
   debug_message "Dumping 48 bytes from $pkg_filename to get body size"
-  dump_file "$1" "0-48" >/dev/null
+  dump_file "$1" 0 48 >/dev/null
   body_offset=$(read_integer "$pkg_filename" 36)
   debug_message "Body offset: $body_offset"
   body_size=$(read_integer "$pkg_filename" 44)
@@ -227,7 +230,7 @@ dump_and_extract_pkg() {
 
   # Download PKG body and extract PKG files
   debug_message "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)"
-  dump_file "$1" $body_offset-$body_size
+  dump_file "$1" 0 $((body_offset + body_size))
   extract_pkg "$pkg_filename"
 
   rm "$pkg_filename" || abort \
