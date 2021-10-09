@@ -15,7 +15,12 @@ For maximum speed, a gigabit cable connection is recommended.
     Before running the script, make sure the game is completely installed.
     Should the dumping process be interrupted, please delete partial dumps
     before trying again.
-
+    
+    Options:
+      -a, --app-only    Dump app only.
+      -h, --help        Print usage information.
+      -p, --patch-only  Dump patch only.
+  
 If no output directory is specified, the current directory will be used.
 The dumps will take place in the following subdirectories:
 
