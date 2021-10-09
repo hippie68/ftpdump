@@ -20,6 +20,7 @@ For maximum speed, a gigabit cable connection is recommended.
       -a, --app-only    Dump app only.
       -h, --help        Print usage information.
       -p, --patch-only  Dump patch only.
+      -s, --sflash      Dump sflash0.
   
 If no output directory is specified, the current directory will be used.
 The dumps will take place in the following subdirectories:
