@@ -1,0 +1,336 @@
+#!/bin/bash
+# Dumps PS4 games via FTP connection over the network.
+# Requires cURL and a PS4 FTP server that supports SELF decryption.
+# For maximum speed, a gigabit cable connection is recommended.
+# Please report bugs at https://github.com/hippie68/ftpdump/issues.
+
+# Optional default values: #####################################################
+
+# PS4's IP address
+ip=
+# PS4's FTP port (FTP payload: 1337)
+port=
+# Beep when complete
+beep=false
+# How long to beep, in seconds
+beep_time=60
+
+# Functions: ###################################################################
+
+print_usage() {
+  echo "Usage: ${0##*/} [IP_ADDRESS:PORT] [OUTPUT_DIRECTORY]"
+  echo
+  echo "1) Insert a disc and install the game."
+  echo "2) Start the FTP server payload on your PS4."
+  echo "3) Press the PS button (no other button) to leave the browser."
+  echo "4) Run the game."
+  echo "5) Run this script."
+  echo
+  echo "To dump more games, repeat steps 1), 4), 5)."
+  echo
+  echo "Before running the script, make sure the game is completely installed."
+  echo "Should the dumping process be interrupted, please delete partial dumps"
+  echo "before trying again."
+}
+
+debug_message() {
+  if [[ $DEBUG ]]; then
+    echo "DEBUG: $1" >&2
+  fi
+}
+
+# Kills the script with an optional message $1
+abort() {
+  if [[ $1 != "" ]]; then
+    echo "$1" >&2
+  fi
+  echo "Error encountered, script aborted." >&2
+  exit 1
+}
+
+# Portable replacement for GNU realpath
+realpath() {
+  echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+}
+
+# Decrypts and downloads a single FTP file $1, overwriting existing files
+# $2: byte range to download (optional)
+dump_file() {
+  local new_file=${1##*/}
+  local range
+
+  if [[ $2 != "" ]]; then
+    range="--range $2"
+  fi
+
+  echo "$new_file"
+  curl $curl_verbose --silent --ignore-content-length "$1" \
+    --output "$new_file" $range || abort "cURL error $?"
+}
+
+# Recursively downloads an FTP directory (this functionality is missing in cURL)
+dump_dir() {
+  local line
+  local new_dir
+
+  while read line; do
+    debug_message "FTP directory entry: $line"
+    # Recurse directories
+    if [[ $line == d* ]]; then
+      new_dir=${line##* }
+      if [[ $new_dir != . && $new_dir != .. ]]; then # Skip . and .. directories
+        echo "$new_dir/"
+        mkdir --parents "$new_dir" && cd "$new_dir" || abort
+        dump_dir "$1$new_dir/"
+        cd .. || abort
+      fi
+    # Download files
+    elif [[ $line == -* ]]; then
+      dump_file "$1/${line##* }"
+    fi
+  done < <(curl --silent "$1")
+}
+
+# Enables SELF decryption, which the FTP server must support
+enable_decryption() {
+  curl -v --silent --verbose --quote DECRYPT "$root" 2>&1 \
+    | grep "SELF decryption enabled" >/dev/null
+  if [[ $? != 0 ]]; then
+    curl -v --silent --verbose --quote DECRYPT "$root" 2>&1 \
+      | grep "SELF decryption enabled" >/dev/null
+    if [[ $? != 0 ]]; then
+      echo "Could not enable decryption. Please try a different FTP server." >&2
+      exit 1
+    fi
+  fi
+}
+
+# PKG extraction: --------------------------------------------------------------
+
+# Returns a 4-byte integer, read from file $1 at offset $2 in big-endian
+read_integer() {
+  local result=0
+  local byte
+  local i
+
+  for i in {0..3}; do
+    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" \
+      2>/dev/null)
+    byte=$(printf "%d" "'$byte")
+    result=$((result + 256 ** (3 - i) * byte))
+  done
+
+  echo $result
+}
+
+# Returns a string, read from file $1 at offset $2
+read_string() {
+  local result
+  local byte
+  local i=0
+
+  while true; do
+    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" \
+      2>/dev/null)
+    if [[ $(printf "%d" "'$byte") != 0 ]]; then
+      result+=$byte
+    else
+      break
+    fi
+    ((i++))
+  done
+
+  echo "$result"
+}
+
+# Extracts a single file from PKG file $1
+# $2: offset, $3: size, $4: output file name
+extract_pkg_file() {
+  echo "$4"
+  if [[ $4 == */* ]]; then # Create directory, if necessary
+    mkdir -p "${4%/*}"
+  fi
+  dd if="$1" "$dd_options" skip="$2" count="$3" 2>/dev/null > "$4" || abort \
+    "Could not extract file \"$4\"."
+}
+
+# Extracts all files from PKG file $1
+extract_pkg() {
+  local file_table_offset=$(read_integer "$1" $((0x18)))
+  local file_count=$(read_integer "$1" $((0x10)))
+  local offset=$file_table_offset
+  local id
+  local filename_offset
+  local data_offset
+  local size
+  local filename
+
+  # Loop through all entries
+  local i=0
+  while [[ $i -lt $file_count ]]; do
+    id=$(read_integer "$1" offset)
+    filename_offset=$(read_integer "$1" $((offset + 4)))
+    data_offset=$(read_integer "$1" $((offset + 16)))
+    size=$(read_integer "$1" $((offset + 20)))
+    if [[ $id == 512 ]]; then
+      filename_table_offset=$data_offset
+    fi
+
+    # Extract entries that are files
+    if [[ $id -ge 1024 ]]; then
+      # For files that have no name, create file names
+      if [[ $id -lt 4096 ]]; then
+        case $id in
+          1024) filename=license.dat ;; # 0x400
+          1025) filename=license.info ;;
+          1026) filename=nptitle.dat ;;
+          1027) filename=npbind.dat ;;
+          1028) filename=selfinfo.dat ;;
+          1030) filename=imageinfo.dat ;;
+          1031) filename=target-deltainfo.dat ;;
+          1032) filename=origin-deltainfo.dat ;;
+          1033) filename=psreserved.dat ;;
+             *) echo "Warning: No file name known for ID \"$id\"." >&2 ;;
+        esac
+      # For other files, read existing file names
+      elif [[ $filename_table_offset != "" && $filename_offset -gt 0 ]]; then
+        filename=$(read_string "$1" $((filename_table_offset + filename_offset)))
+      fi
+      # Extract file
+      if [[ ! -e "$filename" ]]; then
+        extract_pkg_file "$1" $data_offset $size "$filename"
+      else
+        debug_message "Warning: File already exists: \"$filename\" (skipped)."
+      fi
+    fi
+
+    debug_message "$(printf "ID: %#x\n" $id)"
+    debug_message "Filename offset: $filename_offset"
+    debug_message "Data offset: $data_offset"
+    debug_message "Size: $size"
+
+    ((i++))
+    offset=$((offset + 32))
+  done
+}
+
+dump_and_extract_pkg() {
+  local pkg_filename=${1##*/}
+
+  # Test how much PKG data should be downloaded
+  debug_message "Dumping 48 bytes from $pkg_filename to get body size"
+  dump_file "$1" "0-48" >/dev/null
+  body_offset=$(read_integer "$pkg_filename" 36)
+  debug_message "Body offset: $body_offset"
+  body_size=$(read_integer "$pkg_filename" 44)
+  debug_message "Body size: $body_size"
+
+  # Download PKG body and extract PKG files
+  debug_message "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)"
+  dump_file "$1" $body_offset-$body_size
+  extract_pkg "$pkg_filename"
+
+  rm "$pkg_filename" || abort \
+    "Could not remove temporary file \"$pkg_filename\"."
+}
+
+# Main script: #################################################################
+LC_ALL=C
+
+if [[ $1 == "-h" || $1 == "--help" ]]; then
+  print_usage
+  exit 0
+fi
+
+if [[ $CURL_VERBOSE ]]; then
+  curl_verbose="-v"
+fi
+
+# Set FTP prefix
+if [[ $1 != "" ]]; then
+  root="ftp://$1"
+elif [[ $ip != "" && $port != "" ]]; then
+  root="ftp://$ip:$port"
+else
+  print_usage
+  exit 1
+fi
+
+# Set dd options
+dd --version | grep GNU >/dev/null
+if [[ $? == 0 ]]; then
+  dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
+else
+  dd_options="ibs=1"
+fi
+
+# Exit if FTP server is not running
+curl -s --head "$root/" >/dev/null
+case $? in
+  0) ;;
+  7) abort "Could not connect to FTP server. Is it running, and are IP address and port correct?" ;;
+  *) abort "cURL reported error $? (see https://curl.se/libcurl/c/libcurl-errors.html)." ;;
+esac
+
+enable_decryption
+
+# Get Title ID
+title_id=$(curl --silent "$root/mnt/sandbox/" | grep CUSA)
+title_id=${title_id##* }
+title_id=${title_id%_*}
+if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
+  echo "Could not retreive Title ID. Is the game started?" >&2
+  exit 1
+fi
+
+# Set output directory
+if [[ $2 != "" ]]; then
+  output_dir=$2
+else
+  output_dir=.
+fi
+mkdir --parents "$output_dir" && cd "$output_dir" || abort
+
+# Dump app data ----------------------------------------------------------------
+echo "Dumping $title_id app data:"
+mkdir --parents "$title_id-app" && cd "$title_id-app" || abort
+dump_dir "$root/mnt/sandbox/pfsmnt/${title_id}-app0/"
+
+mkdir --parents sce_sys && cd sce_sys || abort
+dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
+dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
+
+# Dump patch data --------------------------------------------------------------
+debug_message "Checking if patch data exists"
+curl -s --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" >/dev/null
+if [[ $? == 0 ]]; then
+  cd ../.. || abort
+  echo "Dumping $title_id patch data:"
+  mkdir --parents "$title_id-patch" && cd "$title_id-patch" || abort
+  dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
+
+  mkdir --parents sce_sys && cd sce_sys || abort
+  cp "../../$title_id-app/sce_sys/npbind.dat" . || abort
+  cp "../../$title_id-app/sce_sys/nptitle.dat" . || abort
+  dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
+else
+  echo "No patch data found."
+fi
+#-------------------------------------------------------------------------------
+
+echo "Done."
+
+# Beep when done
+if [[ $beep == true ]]; then
+  echo "Press CTRL-C to stop beeping."
+  if [[ $beep_time == "" ]]; then
+    beep_time=60
+  fi
+  i=0
+  while [[ $i -le $beep_time ]]; do
+    echo -en "\a"
+    sleep 1
+    ((i++))
+  done
+fi
