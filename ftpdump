@@ -36,6 +36,7 @@ print_usage() {
   echo "  -a, --app-only    Dump app only."
   echo "  -h, --help        Print usage information."
   echo "  -p, --patch-only  Dump patch only."
+  echo "  -s, --sflash      Dump sflash0."
 }
 
 debug_message() {
@@ -283,6 +284,7 @@ for ((i = 0; i < argc; i++)); do
       -h|--help) print_usage; exit 0 ;;
       -a|--app-only) app_only=1 ;;
       -p|--patch-only) patch_only=1 ;;
+      -s|--sflash|--sflash0) sflash=1 ;;
       -*) echo "Unknown option: ${argv[i]}" >&2; print_usage; exit 1;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
@@ -336,6 +338,14 @@ else
 fi
 
 mkdir --parents "$output_dir" || abort
+
+# Dump sflash0 -----------------------------------------------------------------
+
+if [[ $sflash ]]; then
+  cd "$output_dir" || abort
+  dump_file "$root/dev/sflash0"
+  exit 0
+fi
 
 # Dump app data ----------------------------------------------------------------
 
