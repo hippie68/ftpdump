@@ -18,7 +18,7 @@ beep_time=60
 # Functions: ###################################################################
 
 print_usage() {
-  echo "Usage: ${0##*/} [IP_ADDRESS:PORT] [OUTPUT_DIRECTORY]"
+  echo "Usage: ${0##*/} [OPTIONS] [IP_ADDRESS:PORT] [OUTPUT_DIRECTORY]"
   echo
   echo "1) Insert a disc and install the game."
   echo "2) Start the FTP server payload on your PS4."
@@ -31,12 +31,39 @@ print_usage() {
   echo "Before running the script, make sure the game is completely installed."
   echo "Should the dumping process be interrupted, please delete partial dumps"
   echo "before trying again."
+  echo
+  echo "Options:"
+  echo "  -a, --app    Dump app only."
+  echo "  -h, --help   Print usage information."
+  echo "  -p, --patch  Dump patch only."
 }
 
 debug_message() {
   if [[ $DEBUG ]]; then
     echo "DEBUG: $1" >&2
   fi
+}
+
+# Parses command line arguments, creating C-like argc and argv; called with $@
+build_args() {
+  argc=0
+  while [[ $1 != "--" && $1 != "" ]]; do
+    if [[ $1 == --* ]]; then
+      argv[argc++]=$1
+    elif [[ $1 == -?* ]]; then
+      for ((i = 1; i < ${#1}; i++)); do
+        argv[argc++]=-${1:i:1}
+      done
+    else
+      argv[argc++]=$1
+    fi
+    shift
+  done
+  while [[ $1 != "" ]]; do
+    argv[argc++]=$1
+    shift
+  done
+  debug_message "Expanded arguments: ${argv[*]}"
 }
 
 # Kills the script with an optional message $1
@@ -96,10 +123,10 @@ dump_dir() {
 
 # Enables SELF decryption, which the FTP server must support
 enable_decryption() {
-  curl -v --silent --verbose --quote DECRYPT "$root" 2>&1 \
+  curl -v --silent --quote DECRYPT "$root" 2>&1 \
     | grep "SELF decryption enabled" >/dev/null
   if [[ $? != 0 ]]; then
-    curl -v --silent --verbose --quote DECRYPT "$root" 2>&1 \
+    curl -v --silent --quote DECRYPT "$root" 2>&1 \
       | grep "SELF decryption enabled" >/dev/null
     if [[ $? != 0 ]]; then
       echo "Could not enable decryption. Please try a different FTP server." >&2
@@ -240,35 +267,49 @@ dump_and_extract_pkg() {
 # Main script: #################################################################
 LC_ALL=C
 
-if [[ $1 == "-h" || $1 == "--help" ]]; then
-  print_usage
-  exit 0
-fi
-
 if [[ $CURL_VERBOSE ]]; then
   curl_verbose="-v"
 fi
 
+build_args "$@"
+
+# Get options
+for ((i = 0; i < argc; i++)); do
+  if [[ $no_more_args ]]; then
+    non_options[noptc++]=${argv[i]}
+  else
+    case ${argv[i]} in
+      --) no_more_args=1 ;;
+      -h|--help) print_usage; exit 0 ;;
+      -a|--app) app_only=1 ;;
+      -p|--patch) patch_only=1 ;;
+      -*) echo "Unknown option: ${argv[i]}" >&2; print_usage; exit 1;;
+      *) non_options[noptc++]=${argv[i]} ;;
+    esac
+  fi
+done
+
 # Set FTP prefix
-if [[ $1 != "" ]]; then
-  root="ftp://$1"
+if [[ ${non_options[0]} != "" ]]; then
+  root="ftp://${non_options[0]}"
 elif [[ $ip != "" && $port != "" ]]; then
   root="ftp://$ip:$port"
 else
   print_usage
   exit 1
 fi
+debug_message "Using FTP server \"$root\""
 
-# Set dd options
-dd --version | grep GNU >/dev/null
-if [[ $? == 0 ]]; then
-  dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
+# Set output directory
+if [[ ${non_options[1]} != "" ]]; then
+  output_dir=$(realpath "${non_options[1]}")
 else
-  dd_options="ibs=1"
+  output_dir=$(realpath .)
 fi
+debug_message "Using output directory \"$output_dir\""
 
 # Exit if FTP server is not running
-curl -s --head "$root/" >/dev/null
+curl --silent --head "$root/" >/dev/null
 case $? in
   0) ;;
   7) abort "Could not connect to FTP server. Is it running, and are IP address and port correct?" ;;
@@ -286,40 +327,50 @@ if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
   exit 1
 fi
 
-# Set output directory
-if [[ $2 != "" ]]; then
-  output_dir=$2
+# Set dd options
+dd --version | grep GNU >/dev/null
+if [[ $? == 0 ]]; then
+  dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
 else
-  output_dir=.
+  dd_options="ibs=1"
 fi
-mkdir --parents "$output_dir" && cd "$output_dir" || abort
+
+mkdir --parents "$output_dir" || abort
 
 # Dump app data ----------------------------------------------------------------
-echo "Dumping $title_id app data:"
-mkdir --parents "$title_id-app" && cd "$title_id-app" || abort
-dump_dir "$root/mnt/sandbox/pfsmnt/${title_id}-app0/"
 
-mkdir --parents sce_sys && cd sce_sys || abort
-dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
-dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
-dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
-
-# Dump patch data --------------------------------------------------------------
-debug_message "Checking if patch data exists"
-curl -s --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" >/dev/null
-if [[ $? == 0 ]]; then
-  cd ../.. || abort
-  echo "Dumping $title_id patch data:"
-  mkdir --parents "$title_id-patch" && cd "$title_id-patch" || abort
-  dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
+if [[ ! $patch_only ]]; then
+  cd "$output_dir" || abort
+  echo "Dumping $title_id app data:"
+  mkdir --parents "$title_id-app" && cd "$title_id-app" || abort
+  dump_dir "$root/mnt/sandbox/pfsmnt/${title_id}-app0/"
 
   mkdir --parents sce_sys && cd sce_sys || abort
-  cp "../../$title_id-app/sce_sys/npbind.dat" . || abort
-  cp "../../$title_id-app/sce_sys/nptitle.dat" . || abort
-  dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
-else
-  echo "No patch data found."
+  dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
+  dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+  dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
 fi
+
+# Dump patch data --------------------------------------------------------------
+
+if [[ ! $app_only ]]; then
+  debug_message "Checking if patch data exists"
+  curl --silent --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" >/dev/null
+  if [[ $? == 0 ]]; then
+    cd "$output_dir" || abort
+    echo "Dumping $title_id patch data:"
+    mkdir --parents "$title_id-patch" && cd "$title_id-patch" || abort
+    dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
+
+    mkdir --parents sce_sys && cd sce_sys || abort
+    dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
+    dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+    dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
+  else
+    echo "No patch data found."
+  fi
+fi
+
 #-------------------------------------------------------------------------------
 
 echo "Done."
