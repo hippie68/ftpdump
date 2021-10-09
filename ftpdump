@@ -33,9 +33,9 @@ print_usage() {
   echo "before trying again."
   echo
   echo "Options:"
-  echo "  -a, --app    Dump app only."
-  echo "  -h, --help   Print usage information."
-  echo "  -p, --patch  Dump patch only."
+  echo "  -a, --app-only    Dump app only."
+  echo "  -h, --help        Print usage information."
+  echo "  -p, --patch-only  Dump patch only."
 }
 
 debug_message() {
@@ -281,8 +281,8 @@ for ((i = 0; i < argc; i++)); do
     case ${argv[i]} in
       --) no_more_args=1 ;;
       -h|--help) print_usage; exit 0 ;;
-      -a|--app) app_only=1 ;;
-      -p|--patch) patch_only=1 ;;
+      -a|--app-only) app_only=1 ;;
+      -p|--patch-only) patch_only=1 ;;
       -*) echo "Unknown option: ${argv[i]}" >&2; print_usage; exit 1;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
