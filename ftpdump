@@ -18,7 +18,7 @@ beep_time=60
 # Functions: ###################################################################
 
 print_usage() {
-  echo "Usage: ${0##*/} [OPTIONS] [IP_ADDRESS:PORT] [OUTPUT_DIRECTORY]"
+  echo "Usage: ${0##*/} [OPTIONS] IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]"
   echo
   echo "1) Insert a disc and install the game."
   echo "2) Start the FTP server payload on your PS4."
@@ -34,6 +34,7 @@ print_usage() {
   echo
   echo "Options:"
   echo "  -a, --app-only    Dump app only."
+  echo "  -d, --dlc-only    Dump DLC only."
   echo "  -h, --help        Print usage information."
   echo "  -p, --patch-only  Dump patch only."
   echo "  -s, --sflash      Dump sflash0."
@@ -85,13 +86,12 @@ realpath() {
 # (optional: $2: bytes to skip, $3: bytes to download)
 dump_file() {
   local new_file=${1##*/}
-  local range
 
   echo "$new_file"
 
   if [[ $2 != "" ]]; then
     curl $curl_verbose --silent --ignore-content-length "$1" \
-      | dd "$dd_options" skip="$2" count="$3" 2>/dev/null > "$new_file" || \
+      | dd "$dd_options" skip="$2" count="$3" 2> /dev/null > "$new_file" || \
       abort "Error code $?"
   else
     curl $curl_verbose --silent --ignore-content-length "$1" \
@@ -125,10 +125,10 @@ dump_dir() {
 # Enables SELF decryption, which the FTP server must support
 enable_decryption() {
   curl -v --silent --quote DECRYPT "$root" 2>&1 \
-    | grep "SELF decryption enabled" >/dev/null
+    | grep "SELF decryption enabled" > /dev/null
   if [[ $? != 0 ]]; then
     curl -v --silent --quote DECRYPT "$root" 2>&1 \
-      | grep "SELF decryption enabled" >/dev/null
+      | grep "SELF decryption enabled" > /dev/null
     if [[ $? != 0 ]]; then
       echo "Could not enable decryption. Please try a different FTP server." >&2
       exit 1
@@ -146,7 +146,7 @@ read_integer() {
 
   for i in {0..3}; do
     IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" \
-      2>/dev/null)
+      2> /dev/null)
     byte=$(printf "%d" "'$byte")
     result=$((result + 256 ** (3 - i) * byte))
   done
@@ -162,7 +162,7 @@ read_string() {
 
   while true; do
     IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" \
-      2>/dev/null)
+      2> /dev/null)
     if [[ $(printf "%d" "'$byte") != 0 ]]; then
       result+=$byte
     else
@@ -181,7 +181,7 @@ extract_pkg_file() {
   if [[ $4 == */* ]]; then # Create directory, if necessary
     mkdir -p "${4%/*}"
   fi
-  dd if="$1" "$dd_options" skip="$2" count="$3" 2>/dev/null > "$4" || abort \
+  dd if="$1" "$dd_options" skip="$2" count="$3" 2> /dev/null > "$4" || abort \
     "Could not extract file \"$4\"."
 }
 
@@ -195,6 +195,7 @@ extract_pkg() {
   local data_offset
   local size
   local filename
+  local unknown_count
 
   # Loop through all entries
   local i=0
@@ -221,7 +222,10 @@ extract_pkg() {
           1031) filename=target-deltainfo.dat ;;
           1032) filename=origin-deltainfo.dat ;;
           1033) filename=psreserved.dat ;;
-             *) echo "Warning: No file name known for ID \"$id\"." >&2 ;;
+             *) filename=UNKNOWN_$((unknown_count++))
+                printf "Warning: No file name known for file ID \"%#x\".\n" $id >&2
+                printf "         Using file name \"%s\".\n" "$filename" >&2
+                ;;
         esac
       # For other files, read existing file names
       elif [[ $filename_table_offset != "" && $filename_offset -gt 0 ]]; then
@@ -231,7 +235,7 @@ extract_pkg() {
       if [[ ! -e "$filename" ]]; then
         extract_pkg_file "$1" $data_offset $size "$filename"
       else
-        debug_message "Warning: File already exists: \"$filename\" (skipped)."
+        debug_message "Warning: File already exists: \"$filename\" (skipped)"
       fi
     fi
 
@@ -250,7 +254,7 @@ dump_and_extract_pkg() {
 
   # Test how much PKG data should be downloaded
   debug_message "Dumping 48 bytes from $pkg_filename to get body size"
-  dump_file "$1" 0 48 >/dev/null
+  dump_file "$1" 0 48 > /dev/null
   body_offset=$(read_integer "$pkg_filename" 36)
   debug_message "Body offset: $body_offset"
   body_size=$(read_integer "$pkg_filename" 44)
@@ -266,6 +270,7 @@ dump_and_extract_pkg() {
 }
 
 # Main script: #################################################################
+
 LC_ALL=C
 
 if [[ $CURL_VERBOSE ]]; then
@@ -281,25 +286,38 @@ for ((i = 0; i < argc; i++)); do
   else
     case ${argv[i]} in
       --) no_more_args=1 ;;
+      -a|--app-only) dump_app=1 ;;
+      -d|--dlc-only) dump_dlc=1 ;;
       -h|--help) print_usage; exit 0 ;;
-      -a|--app-only) app_only=1 ;;
-      -p|--patch-only) patch_only=1 ;;
+      -p|--patch-only) dump_patch=1 ;;
       -s|--sflash|--sflash0) sflash=1 ;;
-      -*) echo "Unknown option: ${argv[i]}" >&2; print_usage; exit 1;;
+      -*) echo "Unknown option: ${argv[i]}" >&2; print_usage; exit 1 ;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
   fi
 done
 
+# Dump everything by default
+if [[ ! $dump_app$dump_patch$dump_dlc ]]; then
+  dump_app=1 dump_patch=1 dump_dlc=1
+fi
+
 # Set FTP prefix
-if [[ ${non_options[0]} != "" ]]; then
-  root="ftp://${non_options[0]}"
-elif [[ $ip != "" && $port != "" ]]; then
-  root="ftp://$ip:$port"
-else
+if [[ ${non_options[0]} ]]; then
+  ip=${non_options[0]%:*}
+fi
+if [[ ${non_options[0]} == *:* ]]; then
+  port=${non_options[0]#*:}
+fi
+if [[ ! $port ]]; then
+  port=1337
+fi
+if [[ ! $ip ]]; then
+  echo "Please specify an IP address."
   print_usage
   exit 1
 fi
+root="ftp://$ip:$port"
 debug_message "Using FTP server \"$root\""
 
 # Set output directory
@@ -311,7 +329,7 @@ fi
 debug_message "Using output directory \"$output_dir\""
 
 # Exit if FTP server is not running
-curl --silent --head "$root/" >/dev/null
+curl --silent --head "$root/" > /dev/null
 case $? in
   0) ;;
   7) abort "Could not connect to FTP server. Is it running, and are IP address and port correct?" ;;
@@ -330,7 +348,7 @@ if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
 fi
 
 # Set dd options
-dd --version | grep GNU >/dev/null
+dd --version | grep GNU > /dev/null
 if [[ $? == 0 ]]; then
   dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
 else
@@ -349,35 +367,65 @@ fi
 
 # Dump app data ----------------------------------------------------------------
 
-if [[ ! $patch_only ]]; then
+if [[ $dump_app ]]; then
   cd "$output_dir" || abort
   echo "Dumping $title_id app data:"
   mkdir --parents "$title_id-app" && cd "$title_id-app" || abort
-  dump_dir "$root/mnt/sandbox/pfsmnt/${title_id}-app0/"
+
+  dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-app0/"
 
   mkdir --parents sce_sys && cd sce_sys || abort
   dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
   dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+
   dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
 fi
 
 # Dump patch data --------------------------------------------------------------
 
-if [[ ! $app_only ]]; then
+if [[ $dump_patch ]]; then
   debug_message "Checking if patch data exists"
-  curl --silent --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" >/dev/null
+  curl --silent --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" > /dev/null
   if [[ $? == 0 ]]; then
     cd "$output_dir" || abort
     echo "Dumping $title_id patch data:"
     mkdir --parents "$title_id-patch" && cd "$title_id-patch" || abort
+
     dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
 
     mkdir --parents sce_sys && cd sce_sys || abort
     dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
     dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+
     dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
   else
     echo "No patch data found."
+  fi
+fi
+
+# Dump DLC ---------------------------------------------------------------------
+
+if [[ $dump_dlc ]]; then
+  debug_message "Checking if DLC data exists"
+  unset dlc_dirs
+  while read line; do
+    if [[ $line == d* && $line == *-ac ]]; then
+      debug_message "Found DLC directory ${line##* }"
+      dlc_dirs+="${line##* } "
+    fi
+  done < <(curl --silent "$root/mnt/sandbox/pfsmnt/")
+
+  if [[ $dlc_dirs ]]; then
+    cd "$output_dir" || abort
+    echo "Dumping $title_id DLC data:"
+    mkdir --parents "$title_id-dlc" && cd "$title_id-dlc" || abort
+    for dir in $dlc_dirs; do
+      mkdir "$dir" && cd "$dir" || abort
+      dump_dir "$root/mnt/sandbox/pfsmnt/$dir/"
+      cd .. || abort
+    done
+  else
+    echo "No DLC data found."
   fi
 fi
 
