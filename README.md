@@ -21,7 +21,7 @@ For maximum speed, a gigabit cable connection is recommended.
       -d, --dlc-only    Dump DLC only.
       -h, --help        Print usage information.
       -p, --patch-only  Dump patch only.
-      -s, --sflash      Dump sflash0.
+      -s, --sflash      Dump sflash0 and quit.
 
 If no output directory is specified, the current directory will be used.
 The dumps will take place in the following subdirectories:
