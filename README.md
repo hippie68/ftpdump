@@ -2,7 +2,7 @@ Bash script that dumps PS4 games via FTP connection over the network.
 Requires cURL and a PS4 FTP server that supports SELF decryption.
 For maximum speed, a gigabit cable connection is recommended.
 
-    Usage: ftpdump [OPTIONS] [IP_ADDRESS:PORT] [OUTPUT_DIRECTORY]
+    Usage: ftpdump [OPTIONS] IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]
     
     1) Insert a disc and install the game.
     2) Start the FTP server payload on your PS4 (HEN not needed).
@@ -15,13 +15,14 @@ For maximum speed, a gigabit cable connection is recommended.
     Before running the script, make sure the game is completely installed.
     Should the dumping process be interrupted, please delete partial dumps
     before trying again.
-    
+
     Options:
       -a, --app-only    Dump app only.
+      -d, --dlc-only    Dump DLC only.
       -h, --help        Print usage information.
       -p, --patch-only  Dump patch only.
       -s, --sflash      Dump sflash0.
-  
+
 If no output directory is specified, the current directory will be used.
 The dumps will take place in the following subdirectories:
 
