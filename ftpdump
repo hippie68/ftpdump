@@ -37,7 +37,7 @@ print_usage() {
   echo "  -d, --dlc-only    Dump DLC only."
   echo "  -h, --help        Print usage information."
   echo "  -p, --patch-only  Dump patch only."
-  echo "  -s, --sflash      Dump sflash0."
+  echo "  -s, --sflash      Dump sflash0 and quit."
 }
 
 debug_message() {
@@ -286,11 +286,11 @@ for ((i = 0; i < argc; i++)); do
   else
     case ${argv[i]} in
       --) no_more_args=1 ;;
-      -a|--app-only) dump_app=1 ;;
-      -d|--dlc-only) dump_dlc=1 ;;
+      -a|--app|--app-only) dump_app=1 ;;
+      -d|--dlc|--dlc-only) dump_dlc=1 ;;
       -h|--help) print_usage; exit 0 ;;
-      -p|--patch-only) dump_patch=1 ;;
-      -s|--sflash|--sflash0) sflash=1 ;;
+      -p|--patch|--patch-only) dump_patch=1 ;;
+      -s|--sflash|--sflash0) dump_sflash=1 ;;
       -*) echo "Unknown option: ${argv[i]}" >&2; print_usage; exit 1 ;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
@@ -321,7 +321,7 @@ root="ftp://$ip:$port"
 debug_message "Using FTP server \"$root\""
 
 # Set output directory
-if [[ ${non_options[1]} != "" ]]; then
+if [[ ${non_options[1]} ]]; then
   output_dir=$(realpath "${non_options[1]}")
 else
   output_dir=$(realpath .)
@@ -339,12 +339,14 @@ esac
 enable_decryption
 
 # Get Title ID
-title_id=$(curl --silent "$root/mnt/sandbox/" | grep CUSA)
-title_id=${title_id##* }
-title_id=${title_id%_*}
-if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
-  echo "Could not retreive Title ID. Is the game started?" >&2
-  exit 1
+if [[ ! $dump_sflash ]]; then
+  title_id=$(curl --silent "$root/mnt/sandbox/" | grep -E " CUSA[0-9]{5}_")
+  title_id=${title_id##* }
+  title_id=${title_id%_*}
+  if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
+    echo "Could not retreive Title ID. Is the game started?" >&2
+    exit 1
+  fi
 fi
 
 # Set dd options
@@ -359,7 +361,7 @@ mkdir --parents "$output_dir" || abort
 
 # Dump sflash0 -----------------------------------------------------------------
 
-if [[ $sflash ]]; then
+if [[ $dump_sflash ]]; then
   cd "$output_dir" || abort
   dump_file "$root/dev/sflash0"
   exit 0
@@ -409,7 +411,7 @@ if [[ $dump_dlc ]]; then
   debug_message "Checking if DLC data exists"
   unset dlc_dirs
   while read line; do
-    if [[ $line == d* && $line == *-ac ]]; then
+    if [[ $line == d*$title_id*-ac ]]; then
       debug_message "Found DLC directory ${line##* }"
       dlc_dirs+="${line##* } "
     fi
