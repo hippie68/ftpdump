@@ -14,13 +14,16 @@ port=
 beep=false
 # How long to beep, in seconds
 beep_time=60
+# How frequently to beep, in seconds
+beep_interval=3
 
 # Functions: ###################################################################
 
 print_usage() {
-  echo "Usage: ${0##*/} [OPTIONS] IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]"
+  echo "Usage: ${0##*/} [OPTIONS] HOSTNAME|IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]"
   echo
-  echo "1) Insert a disc and install the game."
+  echo "1) Insert a disc and install the game. Optional: visit orbispatches.com"
+  echo "   to download and install a game patch compatible with your firmware."
   echo "2) Start the FTP server payload on your PS4."
   echo "3) Press the PS button (no other button) to leave the browser."
   echo "4) Run the game."
@@ -33,11 +36,11 @@ print_usage() {
   echo "before trying again."
   echo
   echo "Options:"
-  echo "  -a, --app-only    Dump app only."
-  echo "  -d, --dlc-only    Dump DLC only."
-  echo "  -h, --help        Print usage information."
-  echo "  -p, --patch-only  Dump patch only."
-  echo "  -s, --sflash      Dump sflash0 and quit."
+  echo "  -a, --app     Dump app data."
+  echo "  -d, --dlc     Dump DLC data."
+  echo "  -h, --help    Print usage information."
+  echo "  -p, --patch   Dump patch data."
+  echo "  -s, --sflash  Dump sflash0 file and quit."
 }
 
 debug_message() {
@@ -77,12 +80,16 @@ abort() {
   exit 1
 }
 
+curl_error() {
+  abort "cURL reported error $? (see https://curl.se/libcurl/c/libcurl-errors.html)."
+}
+
 # Portable replacement for GNU realpath
 realpath() {
   echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 }
 
-# Decrypts and downloads a single FTP file $1, overwriting existing files
+# Downloads a single FTP file $1, overwriting existing files
 # (optional: $2: bytes to skip, $3: bytes to download)
 dump_file() {
   local new_file=${1##*/}
@@ -92,10 +99,10 @@ dump_file() {
   if [[ $2 != "" ]]; then
     curl $curl_verbose --silent --ignore-content-length "$1" \
       | dd "$dd_options" skip="$2" count="$3" 2> /dev/null > "$new_file" || \
-      abort "Error code $?"
+      curl_error
   else
     curl $curl_verbose --silent --ignore-content-length "$1" \
-      --output "$new_file" || abort "cURL error $?"
+      --output "$new_file" || curl_error
   fi
 }
 
@@ -286,7 +293,7 @@ for ((i = 0; i < argc; i++)); do
   else
     case ${argv[i]} in
       --) no_more_args=1 ;;
-      -a|--app|--app-only) dump_app=1 ;;
+      -a|-g|--app|--game|--app-only) dump_app=1 ;;
       -d|--dlc|--dlc-only) dump_dlc=1 ;;
       -h|--help) print_usage; exit 0 ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
@@ -298,9 +305,11 @@ for ((i = 0; i < argc; i++)); do
 done
 
 # Dump everything by default
-if [[ ! $dump_app$dump_patch$dump_dlc ]]; then
+if [[ ! $dump_app$dump_patch$dump_dlc$dump_sflash ]]; then
   dump_app=1 dump_patch=1 dump_dlc=1
 fi
+debug_message "Dump options: dump_app=$dump_app, dump_patch=$dump_patch, \
+dump_dlc=$dump_dlc, dump_sflash=$dump_sflash"
 
 # Set FTP prefix
 if [[ ${non_options[0]} ]]; then
@@ -313,7 +322,7 @@ if [[ ! $port ]]; then
   port=1337
 fi
 if [[ ! $ip ]]; then
-  echo "Please specify an IP address."
+  echo "Please specify an IP address." >&2
   print_usage
   exit 1
 fi
@@ -332,8 +341,9 @@ debug_message "Using output directory \"$output_dir\""
 curl --silent --head "$root/" > /dev/null
 case $? in
   0) ;;
+  6) abort "Could not resolve host \"$ip\". Please fix your computer's and/or router's DNS settings or enter an IP address." ;;
   7) abort "Could not connect to FTP server. Is it running, and are IP address and port correct?" ;;
-  *) abort "cURL reported error $? (see https://curl.se/libcurl/c/libcurl-errors.html)." ;;
+  *) curl_error ;;
 esac
 
 enable_decryption
@@ -438,13 +448,13 @@ echo "Done."
 # Beep when done
 if [[ $beep == true ]]; then
   echo "Press CTRL-C to stop beeping."
-  if [[ $beep_time == "" ]]; then
+  if [[ ! $beep_time ]]; then
     beep_time=60
   fi
   i=0
   while [[ $i -le $beep_time ]]; do
     echo -en "\a"
-    sleep 1
-    ((i++))
+    sleep $beep_interval
+    i=$((i + beep_interval))
   done
 fi

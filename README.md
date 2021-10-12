@@ -2,10 +2,11 @@ Bash script that dumps PS4 games via FTP connection over the network.
 Requires cURL and a PS4 FTP server that supports SELF decryption.
 For maximum speed, a gigabit cable connection is recommended.
 
-    Usage: ftpdump [OPTIONS] IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]
+    Usage: ftpdump [OPTIONS] HOSTNAME|IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]
     
-    1) Insert a disc and install the game.
-    2) Start the FTP server payload on your PS4 (HEN not needed).
+    1) Insert a disc and install the game. Optional: visit orbispatches.com
+       to download and install a game patch compatible with your firmware.
+    2) Start the FTP server payload on your PS4.
     3) Press the PS button (no other button) to leave the browser.
     4) Run the game.
     5) Run this script.
@@ -17,17 +18,18 @@ For maximum speed, a gigabit cable connection is recommended.
     before trying again.
 
     Options:
-      -a, --app-only    Dump app only.
-      -d, --dlc-only    Dump DLC only.
-      -h, --help        Print usage information.
-      -p, --patch-only  Dump patch only.
-      -s, --sflash      Dump sflash0 and quit.
+      -a, --app     Dump app data.
+      -d, --dlc     Dump DLC data.
+      -h, --help    Print usage information.
+      -p, --patch   Dump patch data.
+      -s, --sflash  Dump sflash0 file and quit.
 
-If no output directory is specified, the current directory will be used.
+By default, app, patch, and dlc data will be dumped. If no output directory is specified, the current directory will be used.
 The dumps will take place in the following subdirectories:
 
     CUSAXXXXX-app
     CUSAXXXXX-patch
+    CUSAXXXXX-dlc
 
 Optionally, IP address and port can be saved inside the script:
 
@@ -41,11 +43,12 @@ The PC speaker can be used to beep when a dump is complete:
 
 Depending on your computer and operating system, you might not have a PC speaker or must enable it first.
 
-Note that I did not have time to test the script with many different games.
-For trouble shooting, you can enable debug messages and/or see cURL's status messages by prefixing the command:
+For troubleshooting, you can enable debug messages and/or see cURL's status messages by prefixing the command:
 
     DEBUG=1 ftpdump ...
     CURL_VERBOSE=1 ftpdump ...
-    DEBUG=1 CURL_VERBOSE=1 ftpdump ...
 
 If the script does not run as expected, please report bugs at https://github.com/hippie68/ftpdump/issues.
+
+### For Windows users:
+The script runs on Windows 10/11 via WSL (https://docs.microsoft.com/windows/wsl/install). Inside WSL, it is possible to run .exe programs, too, e.g. other command line PKG tools to automate dumping, modifying, and converting to PKG.
