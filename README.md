@@ -18,11 +18,12 @@ For maximum speed, a gigabit cable connection is recommended.
     before trying again.
 
     Options:
-      -a, --app     Dump app data.
-      -d, --dlc     Dump DLC data.
-      -h, --help    Print usage information.
-      -p, --patch   Dump patch data.
-      -s, --sflash  Dump sflash0 file and quit.
+      -a, --app       Dump app data.
+      -d, --dlc       Dump DLC data.
+      -h, --help      Print usage information.
+      -k, --keystone  Dump original keystone.
+      -p, --patch     Dump patch data.
+      -s, --sflash    Dump sflash0 file and quit.
 
 By default, app, patch, and dlc data will be dumped. If no output directory is specified, the current directory will be used.
 The dumps will take place in the following subdirectories:
@@ -30,6 +31,7 @@ The dumps will take place in the following subdirectories:
     CUSAXXXXX-app
     CUSAXXXXX-patch
     CUSAXXXXX-dlc
+    CUSAXXXXX-keystone
 
 Optionally, IP address and port can be saved inside the script:
 
@@ -40,6 +42,7 @@ The PC speaker can be used to beep when a dump is complete:
 
     beep=true
     beep_time=60 (in seconds)
+    beep_interval=3 (in seconds)
 
 Depending on your computer and operating system, you might not have a PC speaker or must enable it first.
 

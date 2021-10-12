@@ -10,7 +10,7 @@
 ip=
 # PS4's FTP port (FTP payload: 1337)
 port=
-# Beep when complete
+# Beep when done
 beep=false
 # How long to beep, in seconds
 beep_time=60
@@ -36,11 +36,12 @@ print_usage() {
   echo "before trying again."
   echo
   echo "Options:"
-  echo "  -a, --app     Dump app data."
-  echo "  -d, --dlc     Dump DLC data."
-  echo "  -h, --help    Print usage information."
-  echo "  -p, --patch   Dump patch data."
-  echo "  -s, --sflash  Dump sflash0 file and quit."
+  echo "  -a, --app       Dump app data."
+  echo "  -d, --dlc       Dump DLC data."
+  echo "  -h, --help      Print usage information."
+  echo "  -k, --keystone  Dump original keystone."
+  echo "  -p, --patch     Dump patch data."
+  echo "  -s, --sflash    Dump sflash0 file and quit."
 }
 
 debug_message() {
@@ -235,7 +236,7 @@ extract_pkg() {
                 ;;
         esac
       # For other files, read existing file names
-      elif [[ $filename_table_offset != "" && $filename_offset -gt 0 ]]; then
+      elif [[ $filename_table_offset && $filename_offset -gt 0 ]]; then
         filename=$(read_string "$1" $((filename_table_offset + filename_offset)))
       fi
       # Extract file
@@ -252,7 +253,7 @@ extract_pkg() {
     debug_message "Size: $size"
 
     ((i++))
-    offset=$((offset + 32))
+    ((offset += 32))
   done
 }
 
@@ -296,20 +297,21 @@ for ((i = 0; i < argc; i++)); do
       -a|-g|--app|--game|--app-only) dump_app=1 ;;
       -d|--dlc|--dlc-only) dump_dlc=1 ;;
       -h|--help) print_usage; exit 0 ;;
+      -k|--keystone) dump_keystone=1 ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
       -s|--sflash|--sflash0) dump_sflash=1 ;;
-      -*) echo "Unknown option: ${argv[i]}" >&2; print_usage; exit 1 ;;
+      -*) echo "Unknown option: ${argv[i]}" >&2; print_usage >&2; exit 1 ;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
   fi
 done
 
 # Dump everything by default
-if [[ ! $dump_app$dump_patch$dump_dlc$dump_sflash ]]; then
+if [[ ! $dump_app$dump_patch$dump_dlc$dump_keystone$dump_sflash ]]; then
   dump_app=1 dump_patch=1 dump_dlc=1
 fi
 debug_message "Dump options: dump_app=$dump_app, dump_patch=$dump_patch, \
-dump_dlc=$dump_dlc, dump_sflash=$dump_sflash"
+dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, dump_sflash=$dump_sflash"
 
 # Set FTP prefix
 if [[ ${non_options[0]} ]]; then
@@ -323,7 +325,7 @@ if [[ ! $port ]]; then
 fi
 if [[ ! $ip ]]; then
   echo "Please specify an IP address." >&2
-  print_usage
+  print_usage >&2
   exit 1
 fi
 root="ftp://$ip:$port"
@@ -375,6 +377,16 @@ if [[ $dump_sflash ]]; then
   cd "$output_dir" || abort
   dump_file "$root/dev/sflash0"
   exit 0
+fi
+
+# Dump keystone ----------------------------------------------------------------
+
+if [[ $dump_keystone ]]; then
+  cd "$output_dir" || abort
+  echo "Dumping $title_id keystone:"
+  mkdir --parents "$title_id-keystone" && cd "$title_id-keystone" || abort
+
+  dump_file "$root/mnt/sandbox/pfsmnt/$title_id-app0/sce_sys/keystone"
 fi
 
 # Dump app data ----------------------------------------------------------------
@@ -451,10 +463,13 @@ if [[ $beep == true ]]; then
   if [[ ! $beep_time ]]; then
     beep_time=60
   fi
+  if [[ ! $beep_interval ]]; then
+    beep_interval=3
+  fi
   i=0
   while [[ $i -le $beep_time ]]; do
     echo -en "\a"
     sleep $beep_interval
-    i=$((i + beep_interval))
+    ((i += beep_interval))
   done
 fi
