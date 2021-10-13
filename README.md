@@ -10,22 +10,26 @@ For maximum speed, a gigabit cable connection is recommended.
     3) Press the PS button (no other button) to leave the browser.
     4) Run the game.
     5) Run this script.
-
+    
     To dump more games, repeat steps 1), 4), 5).
-
+    
     Before running the script, make sure the game is completely installed.
     Should the dumping process be interrupted, please delete partial dumps
     before trying again.
-
+    
     Options:
-      -a, --app       Dump app data.
-      -d, --dlc       Dump DLC data.
-      -h, --help      Print usage information.
-      -k, --keystone  Dump original keystone.
-      -p, --patch     Dump patch data.
-      -s, --sflash    Dump sflash0 file and quit.
+      -a, --app         Dump app data.
+      -d, --dlc         Dump DLC data.
+          --appdb       Dump app.db file and quit.
+          --dump PATH   Dump specified FTP file or directory and quit.
+                        Directories must end with a slash: "PATH/".
+      -h, --help        Print usage information.
+      -k, --keystone    Dump original keystone.
+          --no-decrypt  Do not enable SELF decryption.
+      -p, --patch       Dump patch data.
+      -s, --sflash      Dump sflash0 file and quit.
 
-By default, app, patch, and dlc data will be dumped. If no output directory is specified, the current directory will be used.
+By default, app, patch, and DLC data will be dumped. If no output directory is specified, the current directory will be used.
 The dumps will take place in the following subdirectories:
 
     CUSAXXXXX-app

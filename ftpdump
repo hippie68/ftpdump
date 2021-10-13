@@ -20,28 +20,34 @@ beep_interval=3
 # Functions: ###################################################################
 
 print_usage() {
-  echo "Usage: ${0##*/} [OPTIONS] HOSTNAME|IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]"
-  echo
-  echo "1) Insert a disc and install the game. Optional: visit orbispatches.com"
-  echo "   to download and install a game patch compatible with your firmware."
-  echo "2) Start the FTP server payload on your PS4."
-  echo "3) Press the PS button (no other button) to leave the browser."
-  echo "4) Run the game."
-  echo "5) Run this script."
-  echo
-  echo "To dump more games, repeat steps 1), 4), 5)."
-  echo
-  echo "Before running the script, make sure the game is completely installed."
-  echo "Should the dumping process be interrupted, please delete partial dumps"
-  echo "before trying again."
-  echo
-  echo "Options:"
-  echo "  -a, --app       Dump app data."
-  echo "  -d, --dlc       Dump DLC data."
-  echo "  -h, --help      Print usage information."
-  echo "  -k, --keystone  Dump original keystone."
-  echo "  -p, --patch     Dump patch data."
-  echo "  -s, --sflash    Dump sflash0 file and quit."
+  cat << EOF
+Usage: ${0##*/} [OPTIONS] HOSTNAME|IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]
+
+1) Insert a disc and install the game. Optional: visit orbispatches.com
+   to download and install a game patch compatible with your firmware.
+2) Start the FTP server payload on your PS4.
+3) Press the PS button (no other button) to leave the browser.
+4) Run the game.
+5) Run this script.
+
+To dump more games, repeat steps 1), 4), 5).
+
+Before running the script, make sure the game is completely installed.
+Should the dumping process be interrupted, please delete partial dumps
+before trying again.
+
+Options:
+  -a, --app         Dump app data.
+  -d, --dlc         Dump DLC data.
+      --appdb       Dump app.db file and quit.
+      --dump PATH   Dump specified FTP file or directory and quit.
+                    Directories must end with a slash: "PATH/".
+  -h, --help        Print usage information.
+  -k, --keystone    Dump original keystone.
+      --no-decrypt  Do not enable SELF decryption.
+  -p, --patch       Dump patch data.
+  -s, --sflash      Dump sflash0 file and quit.
+EOF
 }
 
 debug_message() {
@@ -243,7 +249,7 @@ extract_pkg() {
       if [[ ! -e "$filename" ]]; then
         extract_pkg_file "$1" $data_offset $size "$filename"
       else
-        debug_message "Warning: File already exists: \"$filename\" (skipped)"
+        debug_message "Warning: file already exists: \"$filename\" (skipped)"
       fi
     fi
 
@@ -277,9 +283,41 @@ dump_and_extract_pkg() {
     "Could not remove temporary file \"$pkg_filename\"."
 }
 
+# Checks for and replaces encrypted trophy files from within sce_sys/
+replace_encrypted_trophies() {
+  local trophy_file
+  local trophy_number
+  local magic_number
+  local trophy_dir
+
+  for trophy_file in trophy/trophy[0-9][0-9].trp; do
+    if [[ ! -f $trophy_file ]]; then
+      return
+    fi
+
+    read magic_number < <(dd if="$trophy_file" bs=1 count=3 2> /dev/null)
+    if [[ $magic_number == $(printf "\xdc\xa2\x4d") ]]; then
+      debug_message "$trophy_file is not encrypted"
+    else
+      debug_message "$trophy_file is encrypted - dumping unencrypted version"
+      trophy_number=${trophy_file#trophy/trophy}
+      trophy_number=${trophy_number%.trp}
+      trophy_dir=$(grep -aoE "NPWR[0-9]{5}_$trophy_number" npbind.dat)
+      if [[ $trophy_file ]]; then
+        dump_file "$root/user/trophy/conf/$trophy_dir/TROPHY.TRP"
+        mv TROPHY.TRP "$trophy_file" || abort
+      else
+        echo "Warning: could not find unencrypted version of $trophy_file." \
+        >&2
+      fi
+    fi
+  done
+}
+
 # Main script: #################################################################
 
 LC_ALL=C
+decrypt=1
 
 if [[ $CURL_VERBOSE ]]; then
   curl_verbose="-v"
@@ -295,23 +333,43 @@ for ((i = 0; i < argc; i++)); do
     case ${argv[i]} in
       --) no_more_args=1 ;;
       -a|-g|--app|--game|--app-only) dump_app=1 ;;
-      -d|--dlc|--dlc-only) dump_dlc=1 ;;
-      -h|--help) print_usage; exit 0 ;;
+      --appdb) dump_appdb=1 ;;
+      -d|--ac|--dlc|--dlc-only) dump_dlc=1 ;;
+      --dump)
+        if [[ $((++i)) -lt argc ]]; then
+          dump_path=${argv[i]}
+        else
+          echo "Missing argument for option --dump." >&2
+          exit 1
+        fi
+        ;;
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
       -k|--keystone) dump_keystone=1 ;;
+      --no-decrypt) unset decrypt ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
       -s|--sflash|--sflash0) dump_sflash=1 ;;
-      -*) echo "Unknown option: ${argv[i]}" >&2; print_usage >&2; exit 1 ;;
+      -*)
+        echo "Unknown option: ${argv[i]}" >&2
+        print_usage >&2
+        exit 1
+        ;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
   fi
 done
 
 # Dump everything by default
-if [[ ! $dump_app$dump_patch$dump_dlc$dump_keystone$dump_sflash ]]; then
+if [[ ! $dump_app$dump_patch$dump_dlc$dump_keystone$dump_sflash$dump_appdb$dump_path ]]
+then
+  debug_message "No dump options specified - enabling app, patch, and DLC dumping"
   dump_app=1 dump_patch=1 dump_dlc=1
 fi
-debug_message "Dump options: dump_app=$dump_app, dump_patch=$dump_patch, \
-dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, dump_sflash=$dump_sflash"
+debug_message "Options: dump_app=$dump_app, dump_patch=$dump_patch, \
+dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, dump_sflash=$dump_sflash, \
+dump_appdb=$dump_appdb, dump_path=$dump_path, decrypt=$decrypt"
 
 # Set FTP prefix
 if [[ ${non_options[0]} ]]; then
@@ -348,19 +406,6 @@ case $? in
   *) curl_error ;;
 esac
 
-enable_decryption
-
-# Get Title ID
-if [[ ! $dump_sflash ]]; then
-  title_id=$(curl --silent "$root/mnt/sandbox/" | grep -E " CUSA[0-9]{5}_")
-  title_id=${title_id##* }
-  title_id=${title_id%_*}
-  if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
-    echo "Could not retreive Title ID. Is the game started?" >&2
-    exit 1
-  fi
-fi
-
 # Set dd options
 dd --version | grep GNU > /dev/null
 if [[ $? == 0 ]]; then
@@ -369,14 +414,49 @@ else
   dd_options="ibs=1"
 fi
 
-mkdir --parents "$output_dir" || abort
+mkdir --parents "$output_dir" && cd "$output_dir" || abort
 
-# Dump sflash0 -----------------------------------------------------------------
+# Single-file dumps  -----------------------------------------------------------
 
+# Database
+if [[ $dump_appdb ]]; then
+  dump_file "$root/system_data/priv/mms/app.db"
+  exit 0
+fi
+
+# sflash0
 if [[ $dump_sflash ]]; then
-  cd "$output_dir" || abort
   dump_file "$root/dev/sflash0"
   exit 0
+fi
+
+if [[ $decrypt ]]; then
+  enable_decryption
+else
+  echo "Warning: SELF decryption not enabled." >&2
+fi
+
+# User-provided file or directory
+if [[ $dump_path ]]; then
+  if [[ ${dump_path##*/} ]]; then
+    debug_message "Treating as file: \"$dump_path\""
+    dump_file "$root/$dump_path"
+  else
+    debug_message "Treating as directory: \"$dump_path\""
+    dump_dir "$root/$dump_path"
+  fi
+  exit 0
+fi
+
+#-------------------------------------------------------------------------------
+
+# For other dumps, get Title ID
+title_id=$(curl --silent "$root/mnt/sandbox/" | grep -E " CUSA[0-9]{5}_")
+title_id=${title_id##* }
+title_id=${title_id%_*}
+if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
+  echo "Could not retreive Title ID. Is the game started?" >&2
+  exit 1
 fi
 
 # Dump keystone ----------------------------------------------------------------
@@ -403,6 +483,7 @@ if [[ $dump_app ]]; then
   dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
 
   dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
+  replace_encrypted_trophies
 fi
 
 # Dump patch data --------------------------------------------------------------
@@ -422,12 +503,13 @@ if [[ $dump_patch ]]; then
     dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
 
     dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
+    replace_encrypted_trophies
   else
     echo "No patch data found."
   fi
 fi
 
-# Dump DLC ---------------------------------------------------------------------
+# Dump DLC data ----------------------------------------------------------------
 
 if [[ $dump_dlc ]]; then
   debug_message "Checking if DLC data exists"
