@@ -122,7 +122,7 @@ dump_dir() {
     debug_message "FTP directory entry: $line"
     # Recurse directories
     if [[ $line == d* ]]; then
-      new_dir=${line##* }
+      new_dir=${line#* [A-Z][a-z][a-z] ?[0-9] [0-9][0-9]* }
       if [[ $new_dir != . && $new_dir != .. ]]; then # Skip . and .. directories
         echo "$new_dir/"
         mkdir --parents "$new_dir" && cd "$new_dir" || abort
@@ -131,7 +131,7 @@ dump_dir() {
       fi
     # Download files
     elif [[ $line == -* ]]; then
-      dump_file "$1/${line##* }"
+      dump_file "$1/${line#* [A-Z][a-z][a-z] ?[0-9] [0-9][0-9][0-9][0-9] }"
     fi
   done < <(curl --silent "$1")
 }
@@ -307,8 +307,7 @@ replace_encrypted_trophies() {
         dump_file "$root/user/trophy/conf/$trophy_dir/TROPHY.TRP"
         mv TROPHY.TRP "$trophy_file" || abort
       else
-        echo "Warning: could not find unencrypted version of $trophy_file." \
-        >&2
+        echo "Warning: could not find unencrypted version of $trophy_file." >&2
       fi
     fi
   done
