@@ -50,12 +50,23 @@ The PC speaker can be used to beep when a dump is complete:
 
 Depending on your computer and operating system, you might not have a PC speaker or must enable it first.
 
-For troubleshooting, you can enable debug messages and/or see cURL's status messages by prefixing the command:
+### Troubleshooting
+
+You can enable debug messages and/or see cURL's status messages by prefixing the command:
 
     DEBUG=1 ftpdump ...
     CURL_VERBOSE=1 ftpdump ...
+
+To compare the dumped directory with a reference dump (e.g. one created by a dumper payload), type:
+
+    diff -r DUMP_DIRECTORY_1 DUMP_DIRECTORY_2
 
 If the script does not run as expected, please report bugs at https://github.com/hippie68/ftpdump/issues.
 
 ### For Windows users:
 The script runs on Windows 10/11 via WSL (https://docs.microsoft.com/windows/wsl/install). Inside WSL, it is possible to run .exe programs, too, e.g. other command line PKG tools to automate dumping, modifying, and converting to PKG.
+
+### For macOS users:
+Having GNU dd instead of the default macOS dd could improve the overall dumping speed slightly:
+
+    brew install coreutils
