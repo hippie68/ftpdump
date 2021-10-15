@@ -100,17 +100,43 @@ realpath() {
   echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 }
 
+# Prints an overall progress percentage in front of each download's file name
+# while dumping app/patch
+print_download_progress() {
+  if [[ $download_progress_enabled ]]; then
+    local result=$((downloaded_bytes * 100 / download_size))
+    if [[ $result -gt 99 ]]; then
+      result=99
+    fi
+    printf "%2d%% " "$result"
+  fi
+}
+
+# $1: expected download size
+enable_download_progress() {
+  download_size=$1
+  downloaded_bytes=0
+  download_progress_enabled=1
+}
+
+disable_download_progress() {
+  unset download_progress_enabled
+}
+
 # Downloads a single FTP file $1, overwriting existing files
 # (optional: $2: bytes to skip, $3: bytes to download)
 dump_file() {
   local new_file=${1##*/}
 
+  print_download_progress
   echo "$new_file"
 
+  # Download partial file
   if [[ $2 != "" ]]; then
     curl $curl_verbose --silent --ignore-content-length "$1" \
       | dd "$dd_options" skip="$2" count="$3" 2> /dev/null > "$new_file" || \
       curl_error
+  # Download full file
   else
     curl $curl_verbose --silent --ignore-content-length "$1" \
       --output "$new_file" || curl_error
@@ -118,6 +144,7 @@ dump_file() {
 }
 
 # Recursively downloads an FTP directory (this functionality is missing in cURL)
+# $2: if set, print progress
 dump_dir() {
   local line
   local new_dir
@@ -127,7 +154,7 @@ dump_dir() {
 
     # Check for known directory listing syntax, while at the same time storing
     # directory entry values in BASH_REMATCH[] array
-    if [[ ! $line =~ ^(.{10})\ ([0-9]+)\ ([^ ]+[ ]*[^ ]+)\ ([0-9]+)\ ([^ ]+\ [^ ]+\ [^ ]+)\ (.+) ]]; then
+    if [[ ! $line =~ ^(.{10})\ ([0-9]+)\ ([^ ]+[ ]*[^ ]+)\ ([0-9]+)\ ([^ ]+\ +[0-9]+\ [^ ]+)\ (.+) ]]; then
       abort "Not able to proceed: FTP server uses unknown directory listing." 1
     fi
 
@@ -135,6 +162,7 @@ dump_dir() {
     if [[ $line == d* ]]; then
       new_dir=${BASH_REMATCH[6]}
       if [[ $new_dir != . && $new_dir != .. ]]; then # Skip . and .. directories
+        print_download_progress
         echo "$new_dir/"
         mkdir --parents "$new_dir" && cd "$new_dir" || abort
         dump_dir "$1$new_dir/"
@@ -142,7 +170,8 @@ dump_dir() {
       fi
     # Download files
     elif [[ $line == -* ]]; then
-        dump_file "$1/${BASH_REMATCH[6]}"
+      ((downloaded_bytes += BASH_REMATCH[4]))
+      dump_file "$1/${BASH_REMATCH[6]}"
     else
       echo "Warning: directory entry neither directory nor file: \"$line\"." >&2
     fi
@@ -163,15 +192,14 @@ enable_decryption() {
   fi
 }
 
-# Sets global variable $download_size to size of FTP file $1, in MB
+# Sets global variable $download_size to size of FTP file $1, in bytes
 get_download_size() {
   download_size=$(curl --silent --head "$1" | grep "Content-Length")
   if [[ $? -eq 0 ]]; then
     download_size=${download_size#* }
     download_size=${download_size%[^0-9]*}
-    download_size="$((download_size / 1000000)) MB"
   else
-    download_size="unknown size"
+    download_size=0
   fi
 }
 
@@ -216,7 +244,7 @@ read_string() {
 # Extracts a single file from PKG file $1
 # $2: offset, $3: size, $4: output file name
 extract_pkg_file() {
-  echo "$4"
+  echo "Extracting $4"
   if [[ $4 == */* ]]; then # Create directory, if necessary
     mkdir -p "${4%/*}"
   fi
@@ -274,7 +302,7 @@ extract_pkg() {
       if [[ ! -e "$filename" ]]; then
         extract_pkg_file "$1" $data_offset $size "$filename"
       else
-        debug_message "Warning: file already exists: \"$filename\" (skipped)"
+        debug_message "Warning: file already exists: \"$filename\" (skipped)."
       fi
     fi
 
@@ -292,8 +320,10 @@ extract_pkg() {
 dump_and_extract_pkg() {
   local pkg_filename=${1##*/}
 
+  echo "Preparing extraction of $pkg_filename ..."
+
   # Test how much PKG data should be downloaded
-  debug_message "Dumping 48 bytes from $pkg_filename to get body size"
+  debug_message "Dumping 48 bytes from $pkg_filename to get body size."
   dump_file "$1" 0 48 > /dev/null
   body_offset=$(read_integer "$pkg_filename" 36)
   debug_message "Body offset: $body_offset"
@@ -301,8 +331,8 @@ dump_and_extract_pkg() {
   debug_message "Body size: $body_size"
 
   # Download PKG body and extract PKG files
-  debug_message "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)"
-  dump_file "$1" 0 $((body_offset + body_size))
+  debug_message "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)."
+  dump_file "$1" 0 $((body_offset + body_size)) > /dev/null
   extract_pkg "$pkg_filename"
 
   rm "$pkg_filename" || abort \
@@ -316,7 +346,9 @@ replace_encrypted_trophies() {
   local trophy_dirs
   local trophy_file
 
+  # Check previously downloaded npbind.dat for trophy directory names
   readarray -t trophy_dirs < <(grep -aoE NPWR[0-9]{5}_[0-9]{2} npbind.dat)
+  debug_message "Trophy directories found in npbind.dat: ${trophy_dirs[*]}"
 
   for trophy_file in trophy/trophy[0-9][0-9].trp; do
     # Quit if no trophy files exist
@@ -324,18 +356,23 @@ replace_encrypted_trophies() {
       return
     fi
 
+    echo "Checking trophy files for encryption:"
+
     read magic_number < <(dd if="$trophy_file" bs=1 count=3 2> /dev/null)
+
     if [[ $magic_number == $(printf "\xdc\xa2\x4d") ]]; then
-      debug_message "$trophy_file is not encrypted"
+      echo "File \"${trophy_file##*/}\" is not encrypted."
     else
-      debug_message "$trophy_file is encrypted - dumping unencrypted version"
+      echo "File \"${trophy_file##*/}\" is encrypted."
       if [[ ${trophy_dirs[$i]} ]]; then
-        echo "${trophy_dirs[$i]}"
-        dump_file "$root/user/trophy/conf/${trophy_dirs[$i]}/TROPHY.TRP"
+        echo "Replacing \"${trophy_file##*/}\" with unencrypted version."
+        debug_message "Copying from trophy directory \"${trophy_dirs[$i]}\""
+        dump_file "$root/user/trophy/conf/${trophy_dirs[$i]}/TROPHY.TRP" \
+          > /dev/null
         mv TROPHY.TRP "$trophy_file" || abort
       else
         echo
-          "Warning: could not find unencrypted version of \"$trophy_file\"." >&2
+          "Warning: could not find unencrypted version of \"${trophy_file##*/}\"." >&2
       fi
     fi
 
@@ -393,7 +430,7 @@ done
 # Dump everything by default
 if [[ ! $dump_app$dump_patch$dump_dlc$dump_keystone$dump_sflash$dump_appdb$dump_path ]]
 then
-  debug_message "No dump options specified - enabling app, patch, and DLC dumping"
+  debug_message "No dump options specified - enabling app, patch, and DLC dumping."
   dump_app=1 dump_patch=1 dump_dlc=1
 fi
 debug_message "Options: dump_app=$dump_app, dump_patch=$dump_patch, \
@@ -416,7 +453,7 @@ if [[ ! $ip ]]; then
   exit 1
 fi
 root="ftp://$ip:$port"
-debug_message "Using FTP server \"$root\""
+debug_message "Using FTP server \"$root\"."
 
 # Set output directory
 if [[ ${non_options[1]} ]]; then
@@ -424,7 +461,7 @@ if [[ ${non_options[1]} ]]; then
 else
   output_dir=$(realpath .)
 fi
-debug_message "Using output directory \"$output_dir\""
+debug_message "Using output directory \"$output_dir\"."
 
 # Exit if FTP server is not running
 curl --silent --head "$root/" > /dev/null
@@ -438,8 +475,10 @@ esac
 # Set dd options
 dd --version | grep GNU > /dev/null
 if [[ $? == 0 ]]; then
+  debug_message "Using GNU dd options (faster)."
   dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
 else
+  debug_message "Using regular dd options (slower)."
   dd_options="ibs=1"
 fi
 
@@ -504,14 +543,18 @@ if [[ $dump_app ]]; then
   get_download_size "$root/user/app/$title_id/app.pkg"
 
   cd "$output_dir" || abort
-  echo "Dumping $title_id app data ($download_size):"
+  echo "Dumping $title_id app data ($((download_size / 1000000)) MB):"
   mkdir --parents "$title_id-app" && cd "$title_id-app" || abort
+
+  enable_download_progress "$download_size"
 
   dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-app0/"
 
   mkdir --parents sce_sys && cd sce_sys || abort
   dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
   dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+
+  disable_download_progress
 
   dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
   replace_encrypted_trophies
@@ -526,14 +569,18 @@ if [[ $dump_patch ]]; then
     get_download_size "$root/user/patch/$title_id/patch.pkg"
 
     cd "$output_dir" || abort
-    echo "Dumping $title_id patch data ($download_size):"
+    echo "Dumping $title_id patch data ($((download_size / 1000000)) MB):"
     mkdir --parents "$title_id-patch" && cd "$title_id-patch" || abort
+
+    enable_download_progress "$download_size"
 
     dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
 
     mkdir --parents sce_sys && cd sce_sys || abort
     dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
     dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+
+    disable_download_progress
 
     dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
     replace_encrypted_trophies
@@ -545,7 +592,7 @@ fi
 # Dump DLC data ----------------------------------------------------------------
 
 if [[ $dump_dlc ]]; then
-  debug_message "Checking if DLC data exists"
+  debug_message "Checking if DLC data exists."
   unset dlc_dirs
   while read line; do
     if [[ $line == d*$title_id*-ac ]]; then
