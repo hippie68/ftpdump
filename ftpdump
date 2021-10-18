@@ -44,6 +44,7 @@ Options:
                     Directories must end with a slash: "PATH/".
   -h, --help        Print usage information.
   -k, --keystone    Dump original keystone.
+  -l, --list DIR    Lists FTP directory entries of directory DIR.
       --no-decrypt  Do not enable SELF decryption.
   -p, --patch       Dump patch data.
   -s, --sflash      Dump sflash0 file and quit.
@@ -133,18 +134,17 @@ dump_file() {
 
   # Download partial file
   if [[ $2 != "" ]]; then
-    curl $curl_verbose --silent --ignore-content-length "$1" \
+    curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
       | dd "$dd_options" skip="$2" count="$3" 2> /dev/null > "$new_file" || \
       curl_error
   # Download full file
   else
-    curl $curl_verbose --silent --ignore-content-length "$1" \
-      --output "$new_file" || curl_error
+    curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
+      > "$new_file" || curl_error
   fi
 }
 
 # Recursively downloads an FTP directory (this functionality is missing in cURL)
-# $2: if set, print progress
 dump_dir() {
   local line
   local new_dir
@@ -171,7 +171,7 @@ dump_dir() {
     # Download files
     elif [[ $line == -* ]]; then
       ((downloaded_bytes += BASH_REMATCH[4]))
-      dump_file "$1/${BASH_REMATCH[6]}"
+      dump_file "$1${BASH_REMATCH[6]}"
     else
       echo "Warning: directory entry neither directory nor file: \"$line\"." >&2
     fi
