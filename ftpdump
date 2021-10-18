@@ -44,7 +44,6 @@ Options:
                     Directories must end with a slash: "PATH/".
   -h, --help        Print usage information.
   -k, --keystone    Dump original keystone.
-  -l, --list DIR    Lists FTP directory entries of directory DIR.
       --no-decrypt  Do not enable SELF decryption.
   -p, --patch       Dump patch data.
   -s, --sflash      Dump sflash0 file and quit.
