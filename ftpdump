@@ -540,7 +540,7 @@ fi
 # Dump app data ----------------------------------------------------------------
 
 if [[ $dump_app ]]; then
-  get_download_size "$root/user/app/$title_id/app.pkg"
+  get_download_size "$root/mnt/sandbox/pfsmnt/$title_id-app0-nest/pfs_image.dat"
 
   cd "$output_dir" || abort
   echo "Dumping $title_id app data ($((download_size / 1000000)) MB):"
@@ -566,7 +566,8 @@ if [[ $dump_patch ]]; then
   debug_message "Checking if patch data exists"
   curl --silent --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" > /dev/null
   if [[ $? == 0 ]]; then
-    get_download_size "$root/user/patch/$title_id/patch.pkg"
+    get_download_size \
+      "$root/mnt/sandbox/pfsmnt/$title_id-patch0-nest/pfs_image.dat"
 
     cd "$output_dir" || abort
     echo "Dumping $title_id patch data ($((download_size / 1000000)) MB):"
