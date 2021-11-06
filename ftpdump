@@ -38,28 +38,30 @@ before trying again.
 
 Options:
   -a, --app         Dump app data.
-  -d, --dlc         Dump DLC data.
       --appdb       Dump app.db file and quit.
+  -d, --dlc         Dump DLC data.
+      --debug       Print debug information while dumping.
       --dump PATH   Dump specified FTP file or directory and quit.
                     Directories must end with a slash: "PATH/".
   -h, --help        Print usage information.
   -k, --keystone    Dump original keystone.
-      --no-decrypt  Do not enable SELF decryption.
+      --no-decrypt  Do not try to enable SELF decryption.
   -p, --patch       Dump patch data.
   -s, --sflash      Dump sflash0 file and quit.
+  -v, --verbose     Increase cURL's verbosity to see the client/server dialog.
 EOF
 }
 
 debug_message() {
-  if [[ $DEBUG ]]; then
-    echo "DEBUG: $1" >&2
+  if [[ $debug ]]; then
+    echo -e "\e[95mDEBUG: \e[35m$1\e[39m" >&2
   fi
 }
 
 # Parses command line arguments, creating C-like argc and argv; called with $@
 build_args() {
   argc=0
-  while [[ $1 != "--" && $1 != "" ]]; do
+  while [[ $1 && $1 != "--" ]]; do
     if [[ $1 == --* ]]; then
       argv[argc++]=$1
     elif [[ $1 == -?* ]]; then
@@ -71,7 +73,7 @@ build_args() {
     fi
     shift
   done
-  while [[ $1 != "" ]]; do
+  while [[ $1 ]]; do
     argv[argc++]=$1
     shift
   done
@@ -105,10 +107,10 @@ realpath() {
 print_download_progress() {
   if [[ $download_progress_enabled ]]; then
     local result=$((downloaded_bytes * 100 / download_size))
-    if [[ $result -gt 99 ]]; then
-      result=99
+    if [[ $result -gt 100 ]]; then
+      result=100
     fi
-    printf "%2d%% " "$result"
+    printf "%d%% " "$result"
   fi
 }
 
@@ -132,7 +134,7 @@ dump_file() {
   echo "$new_file"
 
   # Download partial file
-  if [[ $2 != "" ]]; then
+  if [[ $2 ]]; then
     curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
       | dd "$dd_options" skip="$2" count="$3" 2> /dev/null > "$new_file" || \
       curl_error
@@ -185,7 +187,7 @@ enable_decryption() {
     curl -v --silent --quote DECRYPT "$root" 2>&1 \
       | grep "SELF decryption enabled" > /dev/null
     if [[ $? != 0 ]]; then
-      echo "Could not enable decryption. Please try a different FTP server." >&2
+      echo "Could not enable decryption. Please try a different FTP server or ignore this by using option --no-decrypt." >&2
       exit 1
     fi
   fi
@@ -384,10 +386,6 @@ replace_encrypted_trophies() {
 LC_ALL=C
 decrypt=1
 
-if [[ $CURL_VERBOSE ]]; then
-  curl_verbose="-v"
-fi
-
 build_args "$@"
 
 # Get options
@@ -408,6 +406,7 @@ for ((i = 0; i < argc; i++)); do
           exit 1
         fi
         ;;
+      --debug) debug=1 ;;
       -h|--help)
         print_usage
         exit 0
@@ -416,6 +415,7 @@ for ((i = 0; i < argc; i++)); do
       --no-decrypt) unset decrypt ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
       -s|--sflash|--sflash0) dump_sflash=1 ;;
+      -v|--verbose) curl_verbose=-v ;;
       -*)
         echo "Unknown option: ${argv[i]}" >&2
         print_usage >&2
@@ -434,7 +434,8 @@ then
 fi
 debug_message "Options: dump_app=$dump_app, dump_patch=$dump_patch, \
 dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, dump_sflash=$dump_sflash, \
-dump_appdb=$dump_appdb, dump_path=$dump_path, decrypt=$decrypt"
+dump_appdb=$dump_appdb, dump_path=$dump_path, decrypt=$decrypt, \
+debug=$debug, curl_verbose=$curl_verbose"
 
 # Set FTP prefix
 if [[ ${non_options[0]} ]]; then
@@ -454,16 +455,9 @@ fi
 root="ftp://$ip:$port"
 debug_message "Using FTP server \"$root\"."
 
-# Set output directory
-if [[ ${non_options[1]} ]]; then
-  output_dir=$(realpath "${non_options[1]}")
-else
-  output_dir=$(realpath .)
-fi
-debug_message "Using output directory \"$output_dir\"."
-
-# Exit if FTP server is not running
-curl --silent --head "$root/" > /dev/null
+# Exit if FTP server is not running or does not reply within 5 seconds
+debug_message "Checking connection."
+curl $curl_verbose --max-time 5 --silent --head "$root/" > /dev/null
 case $? in
   0) ;;
   6) abort "Could not resolve host \"$ip\". Please fix your computer's and/or router's DNS settings or enter an IP address." ;;
@@ -481,6 +475,14 @@ else
   dd_options="ibs=1"
 fi
 
+# Set output directory
+if [[ ${non_options[1]} ]]; then
+  output_dir=$(realpath "${non_options[1]}")
+else
+  output_dir=$(realpath .)
+fi
+debug_message "Using output directory \"$output_dir\"."
+
 mkdir --parents "$output_dir" && cd "$output_dir" || abort
 
 # Single-file dumps  -----------------------------------------------------------
@@ -497,6 +499,7 @@ if [[ $dump_sflash ]]; then
   exit 0
 fi
 
+# Enable decryption
 if [[ $decrypt ]]; then
   enable_decryption
 else
