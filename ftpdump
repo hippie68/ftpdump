@@ -4,6 +4,7 @@
 # Best results with the FTP payload from https://github.com/hippie68/ps4-ftp.
 # For maximum speed, a gigabit cable connection is recommended.
 # Get the latest script version at https://github.com/hippie68/ftpdump.
+# Please report bugs at https://github.com/hippie68/ftpdump/issues.
 
 # Optional default values: #####################################################
 
@@ -11,6 +12,8 @@
 ip=
 # PS4's FTP port (FTP payload: 1337)
 port=
+# Maximum number of simultaneous downloads
+download_limit=1
 # Beep when done
 beep=false
 # How long to beep, in seconds
@@ -23,15 +26,16 @@ beep_interval=3
 print_usage() {
   cat << EOF
 Usage: ${0##*/} [OPTIONS] HOSTNAME|IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]
+   Or: ${0##*/} --extract-pfs|--extract-pkg FILE
 
 1) Insert a disc and install the game. Optional: visit orbispatches.com
    to download and install a game patch compatible with your firmware.
-2) Start the FTP server payload on your PS4.
-3) Press the PS button (no other button) to leave the browser.
+2) Start an FTP server. Recommended: https://github.com/hippie68/ps4-ftp.
+3) Press the PS button to leave the browser while keeping the server alive.
 4) Run the game.
 5) Run this script.
 
-To dump more games, repeat steps 1), 4), 5).
+To dump more installed games, repeat steps 4) and 5).
 
 Before running the script, make sure the game is completely installed.
 Should the dumping process get interrupted, please delete partial dumps
@@ -43,22 +47,53 @@ Options:
   -a, --app         Dump app data.
       --appdb       Dump app.db file and quit.
   -d, --dlc         Dump DLC data.
-      --debug       Print debug information while dumping.
+      --download-limit NUMBER
+                    Maximum number of simultaneous downloads. Values greater
+                    than 1 mean downloads run asynchronously. Only use this if
+                    the FTP server can handle simultaneous SELF decryptions.
+      --debug       Print debug information.
+      --debug-pfs   Print debug information while extracting a PFS image file.
       --dump PATH   Dump specified FTP file or directory and quit.
                     Directories must end with a slash: "PATH/".
+      --extract-pfs PFS_IMAGE_FILE
+                    Extract a local PFS image file and quit.
+      --extract-pkg PKG_FILE
+                    Extract a local PKG file and quit.
   -h, --help        Print usage information.
   -k, --keystone    Dump original keystone.
-      --no-decrypt  Do not try to enable SELF decryption.
+      --no-decrypt  Do not tell the FTP server to enable SELF decryption.
+      --no-warning  Do not display general usage warnings. Critical script
+                    execution warnings will still be displayed.
   -p, --patch       Dump patch data.
   -s, --sflash      Dump sflash0 file and quit.
+      --use-pfs     Instead of downloading files separately, download and
+                    extract the PFS image file. It will take longer, but might
+                    be useful to prevent PS4 FTP servers from crashing, which
+                    eventually will happen when downloading thousands of files.
   -v, --verbose     Increase cURL's verbosity to see the client/server dialog.
 EOF
 }
 
 debug_message() {
   if [[ $debug ]]; then
-    echo -e "\e[95mDEBUG: \e[35m$1\e[39m" >&2
+    echo -e "\r\e[95mDEBUG: \e[35m$1\e[39m" >&2
   fi
+}
+
+debug_message_pfs() {
+  if [[ $debug_pfs ]]; then
+    echo -e "\r\e[95mDEBUG: \e[35m$1\e[39m" >&2
+  fi
+}
+
+warning_message() {
+  if [[ $warnings ]]; then
+    echo -e "\r\e[93mWarning: $1\e[39m" >&2
+  fi
+}
+
+critical_message() {
+  echo -e "\r\e[91mCRITICAL: $1\e[39m" >&2
 }
 
 # Parses command line arguments, creating C-like argc and argv; called with $@
@@ -83,21 +118,77 @@ build_args() {
   debug_message "Expanded arguments: ${argv[*]}"
 }
 
-# Kills the script with an optional message $1
-# $2 being set means bugs need to be reported
-abort() {
-  if [[ $1 ]]; then
-    echo "$1" >&2
+# Stops all downloads the FTP server might still be trying to send
+# Requires the server to support the custom command KILL
+kill_downloads() {
+  if [[ $kill_switch ]]; then
+    curl --head --quote KILL "$root" 2> /dev/null
   fi
-  if [[ $2 ]]; then
-    echo "Please report this at https://github.com/hippie68/ftpdump/issues." >&2
-  fi
-  echo "Error encountered, script aborted." >&2
-  exit 1
 }
 
+# Properly stops all ongoing jobs and downloads, then exits the script
+# $1: exit code, $2: optional message
+clean_exit() {
+  kill $(jobs -p) 2> /dev/null
+  wait
+  kill_downloads
+  if [[ $2 ]]; then
+    echo "$2"
+  fi
+  exit $1
+}
+
+# User has pressed CTRL-C or sent SIGINT otherwise
+sigint_exit() {
+  clean_exit 0 "Script aborted by user."
+}
+
+# Stops the script/job execution, printing an optional error message $1
+# $2 being set means it's a critical bug that needs to be reported
+abort() {
+  if [[ $1 ]]; then
+    # Print the message
+    echo "$1" >&2
+    # Log the message in the error log file
+    echo "[$(date)] $1" >> "$error_file"
+  fi
+
+  if [[ $2 ]]; then
+    critical_message "Please report this at https://github.com/hippie68/ftpdump/issues."
+  fi
+
+  # If this is the main process (not a job), then clean-exit with final message
+  if [[ $BASHPID == $main_pid ]]; then
+    clean_exit 1 "Error encountered, script aborted."
+  else # End the job
+    exit 1
+  fi
+}
+
+# Used by the main process in the middle of the script to check if errors
+# occured during jobs
+wait_and_check_for_errors() {
+  wait
+  if [[ -e "$error_file" ]]; then
+    abort
+  fi
+}
+
+# Used by the main process before the script exits, as a final job error check
+check_for_errors_and_exit() {
+  wait_and_check_for_errors
+  echo "Done."
+  exit 0
+}
+
+# $1: optional file name
 curl_error() {
-  abort "cURL reported error $? (see https://curl.se/libcurl/c/libcurl-errors.html)."
+  message="cURL reported error $? (see https://curl.se/libcurl/c/libcurl-errors.html)."
+  if [[ $1 ]]; then
+    message="\"${1/$root/}\": $message"
+  fi
+  debug_message "cURL's message: $message"
+  abort "$message"
 }
 
 # Portable replacement for GNU realpath
@@ -113,7 +204,7 @@ print_download_progress() {
     if [[ $result -gt 100 ]]; then
       result=100
     fi
-    printf "%d%% " "$result"
+    echo -en "$result% "
   fi
 }
 
@@ -125,13 +216,8 @@ enable_download_progress() {
 }
 
 disable_download_progress() {
+  echo -en "\e[2K\r"
   unset download_progress_enabled
-}
-
-kill_connections() {
-  if [[ $kill_switch ]]; then
-    curl --head --quote KILL "$root" 2> /dev/null
-  fi
 }
 
 # Downloads a single FTP file $1, overwriting existing files
@@ -139,19 +225,37 @@ kill_connections() {
 dump_file() {
   local new_file=${1##*/}
 
+  # Abort script if a previous download has failed
+  if [[ -e "$error_file" ]]; then
+    abort 1
+  fi
+
+  # Obey connection limit
+  while [[ $download_jobs_enabled && $(jobs -r | wc -l) -ge "$download_limit" ]]; do
+    wait -n
+  done
+
+  echo -e "\e[2K\r$new_file"
   print_download_progress
-  echo "$new_file"
 
   # Download partial file
   if [[ $2 ]]; then
+    wait # To prevent kill_downloads, below, from killing ongoing downloads
     curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
       | dd "$dd_options" skip="$2" count="$3" 2> /dev/null > "$new_file" || \
-      curl_error
-    kill_connections
+      curl_error "$1"
+    kill_downloads
   # Download full file
   else
-    curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
-      > "$new_file" || curl_error
+    # Run as job
+    if [[ $download_jobs_enabled ]]; then
+      curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
+        > "$new_file" || curl_error "$1" &
+    # Run one at a time
+    else
+      curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
+        > "$new_file" || curl_error "$1"
+    fi
   fi
 }
 
@@ -173,8 +277,8 @@ dump_dir() {
     if [[ $line == d* ]]; then
       new_dir=${BASH_REMATCH[6]}
       if [[ $new_dir != . && $new_dir != .. ]]; then # Skip . and .. directories
+        echo -e "\e[2K\r$new_dir/"
         print_download_progress
-        echo "$new_dir/"
         mkdir --parents "$new_dir" && cd "$new_dir" || abort
         dump_dir "$1$new_dir/"
         cd .. || abort
@@ -184,7 +288,7 @@ dump_dir() {
       ((downloaded_bytes += BASH_REMATCH[4]))
       dump_file "$1${BASH_REMATCH[6]}"
     else
-      echo "Warning: directory entry neither directory nor file: \"$line\"." >&2
+      critical_message "Directory entry neither directory nor file: \"$line\"." >&2
     fi
   done < <(curl --silent "$1")
 }
@@ -200,6 +304,10 @@ enable_decryption() {
       echo "Could not enable decryption. Please try a different FTP server or ignore this by using option --no-decrypt." >&2
       exit 1
     fi
+  fi
+
+  if [[ $? == 0 ]]; then
+    debug_message "Server-side SELF decryption is enabled."
   fi
 }
 
@@ -301,7 +409,7 @@ extract_pkg() {
           1032) filename=origin-deltainfo.dat ;;
           1033) filename=psreserved.dat ;;
              *) filename=UNKNOWN_$((unknown_count++))
-                printf "Warning: No file name known for file ID \"%#x\".\n" $id >&2
+                printf "WARNING: No file name known for file ID \"%#x\".\n" $id >&2
                 printf "         Using file name \"%s\".\n" "$filename" >&2
                 ;;
         esac
@@ -367,7 +475,7 @@ replace_encrypted_trophies() {
       return
     fi
 
-    echo "Checking trophy files for encryption:"
+    echo "Checking trophy files for encryption."
 
     read magic_number < <(dd if="$trophy_file" bs=1 count=3 2> /dev/null)
 
@@ -383,7 +491,7 @@ replace_encrypted_trophies() {
         mv TROPHY.TRP "$trophy_file" || abort
       else
         echo
-          "Warning: could not find unencrypted version of \"${trophy_file##*/}\"." >&2
+          critical_message "Could not find unencrypted version of \"${trophy_file##*/}\"." >&2
       fi
     fi
 
@@ -391,18 +499,161 @@ replace_encrypted_trophies() {
   done
 }
 
-clean_exit() {
-  kill_connections
-  echo
-  exit 0
+# PFS extraction: --------------------------------------------------------------
+
+readonly INODE_SIZE=168
+
+# Returns an integer, read from file $1 at offset $2 in little endian
+# $3: length in bytes
+read_int() {
+  local result=0
+  local byte
+  local i
+
+  for ((i = 0; i < $3; i++)); do
+    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" 2>/dev/null)
+    byte=$(printf "%d" "'$byte")
+    result=$((result + 256 ** i * byte))
+  done
+
+  echo $result
+}
+
+# Recursively extracts directories and files from decrypted PFS image file $1
+# $2: inode index; $1 must have an absolute path
+extract_pfs_dir() {
+  local number_of_blocks=$(read_int "$1" \
+    $((block_size + INODE_SIZE * $2 + 96)) 4)
+  local direct_blocks=$(read_int "$1" \
+    $((block_size + INODE_SIZE * $2 + 100)) 4)
+  local offset=$((block_size * direct_blocks))
+
+  debug_message_pfs "Entering new directory (inode $2)"
+  debug_message_pfs "(Number of blocks: $number_of_blocks)"
+  debug_message_pfs "Direct blocks: $direct_blocks"
+  debug_message_pfs "Offset: $offset"
+
+  local cur_block
+  for ((cur_block = 0; cur_block < number_of_blocks; cur_block++)); do
+    while true; do
+      local dirent_inode_index=$(read_int "$1" $offset 4)
+      # Leave current block if no more directory entries
+      if [[ $dirent_inode_index == 0 ]]; then
+        debug_message_pfs "No more directory entries in block $cur_block"
+        break
+      fi
+
+      local dirent_type=$(read_int "$1" $((offset + 4)) 4)
+      local dirent_filename_len=$(read_int "$1" $((offset + 8)) 4)
+      local dirent_size=$(read_int "$1" $((offset + 12)) 4)
+      local dirent_filename=$(read_string "$1" $((offset + 16)))
+
+      debug_message_pfs "Reading inode $2, block $cur_block, directory entry $i"
+      debug_message_pfs "  -> Dirent inode index: $dirent_inode_index"
+      debug_message_pfs "  -> Dirent type: $dirent_type"
+      debug_message_pfs "  -> Dirent file name length: $dirent_filename_len"
+      debug_message_pfs "  -> Dirent size: $dirent_size"
+      debug_message_pfs "  -> Dirent file name: $dirent_filename"
+
+      # Extract file or create directory
+      case $dirent_type in
+        2) # File
+          if [[ $2 -ne $superroot_inode_index ]]; then
+            if [[ ! -e "$dirent_filename" ]]; then
+              # Wait if currently too many files are being extracted
+              if [[ $(jobs -r | wc -l) -ge 4 ]]; then
+                wait -n
+              fi
+              # Extract file in the background
+              {
+                echo "Extracting $dirent_filename"
+                local file_size=$(read_int "$1" $((block_size + \
+                  dirent_inode_index * INODE_SIZE + 8)) 8)
+                debug_message_pfs "File size: $file_size"
+                local file_offset=$((block_size * $(read_int "$1" \
+                  $((block_size + dirent_inode_index * INODE_SIZE + 100)) 4)))
+                debug_message_pfs "File offset: $file_offset"
+                dd if="$1" $dd_options skip=$file_offset count=$file_size \
+                  2> /dev/null > "$dirent_filename" || abort \
+                  "Error while extracting file \"$dirent_filename\"."
+              } &
+            else
+              debug_message "Warning: File already exists: \"$dirent_filename\" (skipped)."
+            fi
+          fi
+          ;;
+        3) # Directory
+          if [[ $2 -eq $superroot_inode_index ]]; then
+            extract_pfs_dir "$1" $dirent_inode_index # Extract true root dir
+          else
+            echo "Extracting $dirent_filename/"
+            mkdir --parents "$dirent_filename" || abort
+            cd "$dirent_filename" || abort
+            extract_pfs_dir "$1" $dirent_inode_index # Extract next directory
+            cd .. || abort
+            debug_message_pfs "Returning to previous directory (inode $2)"
+          fi
+          ;;
+      esac
+
+      offset=$((offset + dirent_size))
+    done
+  done
+}
+
+# Extracts all files from PFS image file $1
+extract_pfs_image() {
+  debug_message "Extracting PFS image file \"$1\"."
+  superroot_inode_index=$(read_int "$1" 72 8)
+  block_size=$(read_int "$1" 32 4)
+  extract_pfs_dir "$(realpath "$1")" $superroot_inode_index
+  echo "Waiting for extraction to finish ..."
+  wait_and_check_for_errors
+}
+
+# Downloads and extracts PFS image file $1
+dump_and_extract_pfs_image() {
+  echo "Downloading PFS image file ..."
+
+  curl $curl_verbose --progress-bar "${1//#/%23}" > "pfs_image.dat" \
+    || curl_error "$1"
+  extract_pfs_image "pfs_image.dat"
+
+  rm "pfs_image.dat" || abort \
+    "Could not remove temporary file \"pfs_image.dat\"."
+}
+
+# Replaces the PFS image dump's encrypted files with decrypted versions
+# $1: FTP path to compare current directory with
+replace_encrypted_files() {
+  echo "Replacing encrypted files ..."
+
+  find . -type f -print0 | while read -d $'\0' file_path; do
+    file_name=${file_path#./}
+    debug_message "Checking $file_name"
+    magic_number=$(read_integer "$file_name" 0)
+    # File is encrypted
+    if [[ $magic_number == 1326791965 ]]; then
+      dir="${file_path%/*}"
+      cd "$dir" || abort
+      debug_message "Replacing encrypted file \"$file_name\"."
+      dump_file "$1$file_name"
+      cd - > /dev/null || abort
+    fi
+  done
 }
 
 # Main script: #################################################################
 
 LC_ALL=C
+main_pid=$BASHPID
 decrypt=1
+warnings=1
+error_file="$(pwd)/error_log.txt"
 
-trap clean_exit SIGINT
+trap sigint_exit SIGINT # To catch CTRL-C
+
+rm "$error_file" 2> /dev/null # Remove old error log file
 
 # Get options
 build_args "$@"
@@ -424,14 +675,43 @@ for ((i = 0; i < argc; i++)); do
         fi
         ;;
       --debug) debug=1 ;;
+      --debug-pfs) debug_pfs=1 ;;
+      --download-limit)
+        if [[ $((++i)) -lt argc ]]; then
+          download_limit=${argv[i]}
+        else
+          echo "Missing argument for option --download-limit." >&2
+          exit 1
+        fi
+        ;;
+      --extract-pfs)
+        if [[ $((++i)) -lt argc ]]; then
+          extract_pfs_image "${argv[i]}"
+          exit 0
+        else
+          echo "Missing argument for option --extract-pfs." >&2
+          exit 1
+        fi
+        ;;
+      --extract-pkg)
+        if [[ $((++i)) -lt argc ]]; then
+          extract_pkg "${argv[i]}"
+          exit 0
+        else
+          echo "Missing argument for option --extract-pkg." >&2
+          exit 1
+        fi
+        ;;
       -h|--help)
         print_usage
         exit 0
         ;;
       -k|--keystone) dump_keystone=1 ;;
       --no-decrypt) unset decrypt ;;
+      --no-warning) unset warnings ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
       -s|--sflash|--sflash0) dump_sflash=1 ;;
+      --use-pfs) pfs_extraction_enabled=1 ;;
       -v|--verbose) curl_verbose=-v ;;
       -*)
         echo "Unknown option: ${argv[i]}" >&2
@@ -449,10 +729,24 @@ then
   debug_message "No dump options specified - enabling app, patch, and DLC dumping."
   dump_app=1 dump_patch=1 dump_dlc=1
 fi
+
+# Enable jobs when download limit > 1
+if [[ $download_limit -gt 1 ]]; then
+  debug_message "Download limit set to $download_limit - downloads are running asynchronously."
+  warning_message "Asynchronous downloads are enabled. The FTP server must support simultaneous SELF decryptions, otherwise dumps can become corrupted."
+  download_jobs_enabled=1
+else
+  download_limit=1
+  debug_message "Download limit set to $download_limit (default)."
+fi
+
+# Display the current state of all options
 debug_message "Options: dump_app=$dump_app, dump_patch=$dump_patch, \
 dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, dump_sflash=$dump_sflash, \
 dump_appdb=$dump_appdb, dump_path=$dump_path, decrypt=$decrypt, \
-debug=$debug, curl_verbose=$curl_verbose"
+debug=$debug, debug_pfs=$debug_pfs, curl_verbose=$curl_verbose, \
+download_jobs_enabled=$download_jobs_enabled, download_limit=$download_limit, \
+pfs_extraction_enabled=$pfs_extraction_enabled"
 
 # Set FTP prefix
 if [[ ${non_options[0]} ]]; then
@@ -515,20 +809,20 @@ mkdir --parents "$output_dir" && cd "$output_dir" || abort
 # Database
 if [[ $dump_appdb ]]; then
   dump_file "$root/system_data/priv/mms/app.db"
-  exit 0
+  check_for_errors_and_exit
 fi
 
 # sflash0
 if [[ $dump_sflash ]]; then
   dump_file "$root/dev/sflash0"
-  exit 0
+  check_for_errors_and_exit
 fi
 
 # Enable decryption
 if [[ $decrypt ]]; then
   enable_decryption
 else
-  echo "Warning: SELF decryption not enabled." >&2
+  warning_message "SELF decryption not enabled." >&2
 fi
 
 # User-provided file or directory
@@ -540,7 +834,7 @@ if [[ $dump_path ]]; then
     debug_message "Treating as directory: \"$dump_path\""
     dump_dir "$root/$dump_path"
   fi
-  exit 0
+  check_for_errors_and_exit
 fi
 
 #-------------------------------------------------------------------------------
@@ -573,13 +867,19 @@ if [[ $dump_app ]]; then
   echo "Dumping $title_id app data ($((download_size / 1000000)) MB):"
   mkdir --parents "$title_id-app" && cd "$title_id-app" || abort
 
-  enable_download_progress "$download_size"
-
-  dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-app0/"
+  if [[ $pfs_extraction_enabled ]]; then
+    dump_and_extract_pfs_image \
+      "$root/mnt/sandbox/pfsmnt/$title_id-app0-nest/pfs_image.dat"
+    replace_encrypted_files "$root/mnt/sandbox/pfsmnt/$title_id-app0/"
+  else
+    enable_download_progress "$download_size"
+    dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-app0/"
+  fi
 
   mkdir --parents sce_sys && cd sce_sys || abort
   dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
   dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+  wait_and_check_for_errors
 
   disable_download_progress
 
@@ -600,13 +900,19 @@ if [[ $dump_patch ]]; then
     echo "Dumping $title_id patch data ($((download_size / 1000000)) MB):"
     mkdir --parents "$title_id-patch" && cd "$title_id-patch" || abort
 
-    enable_download_progress "$download_size"
-
-    dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
+    if [[ $pfs_extraction_enabled ]]; then
+      dump_and_extract_pfs_image \
+        "$root/mnt/sandbox/pfsmnt/$title_id-patch0-nest/pfs_image.dat"
+      replace_encrypted_files "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
+    else
+      enable_download_progress "$download_size"
+      dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
+    fi
 
     mkdir --parents sce_sys && cd sce_sys || abort
     dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
     dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+    wait_and_check_for_errors
 
     disable_download_progress
 
@@ -639,13 +945,11 @@ if [[ $dump_dlc ]]; then
       cd .. || abort
     done
   else
-    echo "No DLC data found."
+    echo "No DLC data found for $title_id."
   fi
 fi
 
 #-------------------------------------------------------------------------------
-
-echo "Done."
 
 # Beep when done
 if [[ $beep == true ]]; then
@@ -663,3 +967,5 @@ if [[ $beep == true ]]; then
     ((i += beep_interval))
   done
 fi
+
+check_for_errors_and_exit
