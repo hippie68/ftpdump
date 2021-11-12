@@ -58,6 +58,8 @@ Options:
       --no-decrypt  Do not tell the FTP server to enable SELF decryption.
   -p, --patch       Dump patch data.
   -s, --sflash      Dump sflash0 file and quit.
+      --shutdown    Send the SHUTDOWN command and quit. If the FTP server is a
+                    payload that understands the command, it will stop running.
       --use-pfs     Instead of downloading files separately, download and
                     extract the PFS image file.
   -v, --verbose     Increase cURL's verbosity to see the client/server dialog.
@@ -78,7 +80,7 @@ debug_message_pfs() {
 
 warning_message() {
   if [[ $warnings ]]; then
-    echo -e "\r\e[93mWarning: $1\e[39m" >&2
+    echo -e "\r\e[93mWARNING: $1\e[39m" >&2
   fi
 }
 
@@ -710,6 +712,7 @@ for ((i = 0; i < argc; i++)); do
       --no-decrypt) unset decrypt ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
       -s|--sflash|--sflash0) dump_sflash=1 ;;
+      --shutdown) shutdown=1 ;;
       --use-pfs) pfs_extraction_enabled=1 ;;
       -v|--verbose) curl_verbose=-v ;;
       -*)
@@ -807,12 +810,23 @@ case $? in
   *) curl_error ;;
 esac
 
-# Check for kill switch support
+# Send SHUTDOWN command and quit
+if [[ $shutdown ]]; then
+  if curl --head --quote SHUTDOWN "$root" 2> /dev/null; then
+    echo "SHUTDOWN command successfully sent."
+    exit 0
+  else
+    warning_message "Server does not support the SHUTDOWN command."
+    exit 1
+  fi
+fi
+
+# Check for KILL command support
 if curl --head --quote KILL "$root" 2> /dev/null; then
-  debug_message "Server has a kill switch, which is great."
+  debug_message "Server supports the KILL command, which is great."
   kill_switch=1;
 else
-  warning_message "Server does not have a kill switch - subsequent dumps may become slower each time."
+  warning_message "Server does not support the KILL command - subsequent dumps may become slower each time."
 fi
 
 # Create output directory
