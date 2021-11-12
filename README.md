@@ -50,6 +50,8 @@ General usage:
           --no-decrypt  Do not tell the FTP server to enable SELF decryption.
       -p, --patch       Dump patch data.
       -s, --sflash      Dump sflash0 file and quit.
+          --shutdown    Send the SHUTDOWN command and quit. If the FTP server is a
+                        payload that understands the command, it will stop running.
           --use-pfs     Instead of downloading files separately, download and
                         extract the PFS image file.
       -v, --verbose     Increase cURL's verbosity to see the client/server dialog.
