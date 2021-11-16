@@ -67,21 +67,11 @@ EOF
 }
 
 debug_message() {
-  if [[ $debug ]]; then
-    echo -e "\r\e[95mDEBUG: \e[35m$1\e[39m" >&2
-  fi
-}
-
-debug_message_pfs() {
-  if [[ $debug_pfs ]]; then
-    echo -e "\r\e[95mDEBUG: \e[35m$1\e[39m" >&2
-  fi
+  echo -e "\r\e[95mDEBUG: \e[35m$1\e[39m" >&2
 }
 
 warning_message() {
-  if [[ $warnings ]]; then
-    echo -e "\r\e[93mWARNING: $1\e[39m" >&2
-  fi
+  echo -e "\r\e[93mWARNING: $1\e[39m" >&2
 }
 
 critical_message() {
@@ -107,7 +97,7 @@ build_args() {
     argv[argc++]=$1
     shift
   done
-  debug_message "Expanded arguments: ${argv[*]}"
+  [[ $debug ]] && debug_message "Expanded arguments: ${argv[*]}"
 }
 
 # Stops all downloads the FTP server might still be trying to send
@@ -178,7 +168,7 @@ curl_error() {
   if [[ $1 ]]; then
     message="\"${1#$root}\": $message"
   fi
-  debug_message "cURL's message: $message"
+  [[ $debug ]] && debug_message "cURL's message: $message"
   abort "$message"
 }
 
@@ -298,7 +288,7 @@ enable_decryption() {
   fi
 
   if [[ $? == 0 ]]; then
-    debug_message "Server-side SELF decryption is enabled."
+    [[ $debug ]] && debug_message "Server-side SELF decryption is enabled."
   fi
 }
 
@@ -412,14 +402,17 @@ extract_pkg() {
       if [[ ! -e "$filename" ]]; then
         extract_pkg_file "$1" $data_offset $size "$filename"
       else
-        debug_message "Warning: file already exists: \"$filename\" (skipped)."
+        [[ $debug ]] && debug_message \
+          "Warning: file already exists: \"$filename\" (skipped)."
       fi
     fi
 
-    debug_message "$(printf "ID: %#x\n" $id)"
-    debug_message "Filename offset: $filename_offset"
-    debug_message "Data offset: $data_offset"
-    debug_message "Size: $size"
+    if [[ $debug ]]; then
+      debug_message "$(printf "ID: %#x\n" $id)"
+      debug_message "Filename offset: $filename_offset"
+      debug_message "Data offset: $data_offset"
+      debug_message "Size: $size"
+    fi
 
     ((i++))
     ((offset += 32))
@@ -433,15 +426,17 @@ dump_and_extract_pkg() {
   echo "Preparing extraction of $pkg_filename ..."
 
   # Test how much PKG data should be downloaded
-  debug_message "Dumping 48 bytes from $pkg_filename to get body size."
+  [[ $debug ]] && debug_message \
+    "Dumping 48 bytes from $pkg_filename to get body size."
   dump_file "$1" 0 48 > /dev/null
   body_offset=$(read_integer "$pkg_filename" 36)
-  debug_message "Body offset: $body_offset"
+  [[ $debug ]] && debug_message "Body offset: $body_offset"
   body_size=$(read_integer "$pkg_filename" 44)
-  debug_message "Body size: $body_size"
+  [[ $debug ]] && debug_message "Body size: $body_size"
 
   # Download PKG body and extract PKG files
-  debug_message "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)."
+  [[ $debug ]] && debug_message \
+    "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)."
   dump_file "$1" 0 $((body_offset + body_size)) > /dev/null
   extract_pkg "$pkg_filename"
 
@@ -458,7 +453,8 @@ replace_encrypted_trophies() {
 
   # Check previously downloaded npbind.dat for trophy directory names
   readarray -t trophy_dirs < <(grep -aoE NPWR[0-9]{5}_[0-9]{2} npbind.dat)
-  debug_message "Trophy directories found in npbind.dat: ${trophy_dirs[*]}"
+  [[ $debug ]] && debug_message \
+    "Trophy directories found in npbind.dat: ${trophy_dirs[*]}"
 
   for trophy_file in trophy/trophy[0-9][0-9].trp; do
     # Quit if no trophy files exist
@@ -476,13 +472,15 @@ replace_encrypted_trophies() {
       echo "File \"${trophy_file##*/}\" is encrypted."
       if [[ ${trophy_dirs[$i]} ]]; then
         echo "Replacing \"${trophy_file##*/}\" with unencrypted version."
-        debug_message "Copying from trophy directory \"${trophy_dirs[$i]}\""
+        [[ $debug ]] && debug_message \
+          "Copying from trophy directory \"${trophy_dirs[$i]}\""
         dump_file "$root/user/trophy/conf/${trophy_dirs[$i]}/TROPHY.TRP" \
           > /dev/null
         mv TROPHY.TRP "$trophy_file" || abort
       else
         echo
-          critical_message "Could not find unencrypted version of \"${trophy_file##*/}\"." >&2
+          critical_message \
+            "Could not find unencrypted version of \"${trophy_file##*/}\"." >&2
       fi
     fi
 
@@ -519,10 +517,12 @@ extract_pfs_dir() {
     $((block_size + INODE_SIZE * $2 + 100)) 4)
   local offset=$((block_size * direct_blocks))
 
-  debug_message_pfs "Entering new directory (inode $2)"
-  debug_message_pfs "(Number of blocks: $number_of_blocks)"
-  debug_message_pfs "Direct blocks: $direct_blocks"
-  debug_message_pfs "Offset: $offset"
+  if [[ $debug_pfs ]]; then
+    debug_message "Entering new directory (inode $2)"
+    debug_message "(Number of blocks: $number_of_blocks)"
+    debug_message "Direct blocks: $direct_blocks"
+    debug_message "Offset: $offset"
+  fi
 
   local cur_block
   for ((cur_block = 0; cur_block < number_of_blocks; cur_block++)); do
@@ -530,7 +530,8 @@ extract_pfs_dir() {
       local dirent_inode_index=$(read_int "$1" $offset 4)
       # Leave current block if no more directory entries
       if [[ $dirent_inode_index == 0 ]]; then
-        debug_message_pfs "No more directory entries in block $cur_block"
+        [[ $debug_pfs ]] && debug_message \
+          "No more directory entries in block $cur_block"
         break
       fi
 
@@ -539,12 +540,14 @@ extract_pfs_dir() {
       local dirent_size=$(read_int "$1" $((offset + 12)) 4)
       local dirent_filename=$(read_string "$1" $((offset + 16)))
 
-      debug_message_pfs "Reading inode $2, block $cur_block, directory entry $i"
-      debug_message_pfs "  -> Dirent inode index: $dirent_inode_index"
-      debug_message_pfs "  -> Dirent type: $dirent_type"
-      debug_message_pfs "  -> Dirent file name length: $dirent_filename_len"
-      debug_message_pfs "  -> Dirent size: $dirent_size"
-      debug_message_pfs "  -> Dirent file name: $dirent_filename"
+      if [[ $debug_pfs ]]; then
+        debug_message "Reading inode $2, block $cur_block, directory entry $i"
+        debug_message "  -> Dirent inode index: $dirent_inode_index"
+        debug_message "  -> Dirent type: $dirent_type"
+        debug_message "  -> Dirent file name length: $dirent_filename_len"
+        debug_message "  -> Dirent size: $dirent_size"
+        debug_message "  -> Dirent file name: $dirent_filename"
+      fi
 
       # Extract file or create directory
       case $dirent_type in
@@ -561,16 +564,17 @@ extract_pfs_dir() {
                 echo "Extracting $dirent_filename"
                 local file_size=$(read_int "$1" $((block_size + \
                   dirent_inode_index * INODE_SIZE + 8)) 8)
-                debug_message_pfs "File size: $file_size"
+                [[ $debug_pfs ]] && debug_message "File size: $file_size"
                 local file_offset=$((block_size * $(read_int "$1" \
                   $((block_size + dirent_inode_index * INODE_SIZE + 100)) 4)))
-                debug_message_pfs "File offset: $file_offset"
+                [[ $debug_pfs ]] && debug_message "File offset: $file_offset"
                 dd if="$1" $dd_options skip=$file_offset count=$file_size \
                   2> /dev/null > "$dirent_filename" || abort \
                   "Error while extracting file \"$dirent_filename\"."
               } &
             else
-              debug_message "Warning: File already exists: \"$dirent_filename\" (skipped)."
+              [[ $debug ]] && debug_message \
+                "Warning: File already exists: \"$dirent_filename\" (skipped)."
             fi
           fi
           ;;
@@ -583,7 +587,8 @@ extract_pfs_dir() {
             cd "$dirent_filename" || abort
             extract_pfs_dir "$1" $dirent_inode_index # Extract next directory
             cd .. || abort
-            debug_message_pfs "Returning to previous directory (inode $2)"
+            [[ $debug_pfs ]] && debug_message \
+              "Returning to previous directory (inode $2)"
           fi
           ;;
       esac
@@ -595,7 +600,7 @@ extract_pfs_dir() {
 
 # Extracts all files from PFS image file $1
 extract_pfs_image() {
-  debug_message "Extracting PFS image file \"$1\"."
+  [[ $debug ]] && debug_message "Extracting PFS image file \"$1\"."
   superroot_inode_index=$(read_int "$1" 72 8)
   block_size=$(read_int "$1" 32 4)
   extract_pfs_dir "$(realpath "$1")" $superroot_inode_index
@@ -623,13 +628,13 @@ replace_encrypted_files() {
 
   find . -type f -print0 | while read -d $'\0' file_path; do
     file_name=${file_path#./}
-    debug_message "Checking $file_name"
+    [[ $debug ]] && debug_message "Checking $file_name"
     magic_number=$(read_integer "$file_name" 0)
     # File is encrypted
     if [[ $magic_number == 1326791965 ]]; then
       dir="${file_path%/*}"
       cd "$dir" || abort
-      debug_message "Replacing encrypted file \"$file_name\"."
+      [[ $debug ]] && debug_message "Replacing encrypted file \"$file_name\"."
       dump_file "$1$file_name"
       cd - > /dev/null || abort
     fi
@@ -641,8 +646,7 @@ replace_encrypted_files() {
 LC_ALL=C
 main_pid=$BASHPID
 decrypt=1
-warnings=1
-error_file="$(pwd)/error_log.txt"
+error_file="$(pwd)/error_log.txt" # Used by the main process to spot failed jobs
 
 trap sigint_exit SIGINT # To catch CTRL-C
 
@@ -728,20 +732,21 @@ done
 # Set dd options
 dd --version | grep GNU > /dev/null
 if [[ $? == 0 ]]; then
-  debug_message "GNU dd detected - using GNU dd options."
+  [[ $debug ]] && debug_message "GNU dd detected - using GNU dd options."
   dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
 else
-  debug_message "Non-GNU dd detected - using regular dd options (slow!)."
+  [[ $debug ]] && debug_message \
+    "Non-GNU dd detected - using regular dd options (slow!)."
   dd_options="ibs=1"
 fi
 
 # Set output directory
 if [[ ${non_options[1]} ]]; then
   output_dir=$(realpath "${non_options[1]}")
-  debug_message "Using output directory \"$output_dir\"."
+  [[ $debug ]] && debug_message "Using output directory \"$output_dir\"."
 else
   output_dir=$(realpath .)
-  debug_message "Using current directory as output directory."
+  [[ $debug ]] && debug_message "Using current directory as output directory."
 fi
 
 # PFS image file extraction (option --extract-pfs)
@@ -771,16 +776,17 @@ fi
 # Dump everything by default
 if [[ ! $dump_app$dump_patch$dump_dlc$dump_keystone$dump_sflash$dump_appdb$dump_path ]]
 then
-  debug_message "No dump options specified - enabling app, patch, and DLC dumping."
+  [[ $debug ]] && debug_message \
+    "No dump options specified - enabling app, patch, and DLC dumping."
   dump_app=1 dump_patch=1 dump_dlc=1
 fi
 
 # Display the current state of all options
-debug_message "Options: dump_app=$dump_app, dump_patch=$dump_patch, \
-dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, dump_sflash=$dump_sflash, \
-dump_appdb=$dump_appdb, dump_path=$dump_path, decrypt=$decrypt, \
-debug=$debug, debug_pfs=$debug_pfs, curl_verbose=$curl_verbose, \
-pfs_extraction_enabled=$pfs_extraction_enabled"
+[[ $debug ]] && debug_message "Options: dump_app=$dump_app, \
+dump_patch=$dump_patch, dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, \
+dump_sflash=$dump_sflash, dump_appdb=$dump_appdb, dump_path=$dump_path, \
+decrypt=$decrypt, debug=$debug, debug_pfs=$debug_pfs, \
+curl_verbose=$curl_verbose, pfs_extraction_enabled=$pfs_extraction_enabled"
 
 # Set FTP prefix
 if [[ ${non_options[0]} ]]; then
@@ -798,10 +804,25 @@ if [[ ! $ip ]]; then
   exit 1
 fi
 root="ftp://$ip:$port"
-debug_message "Using FTP server \"$root\"."
+[[ $debug ]] && debug_message "Using FTP server \"$root\"."
+
+# Check for cURL
+if ! curl --version &> /dev/null; then
+  echo "cURL not found, which is required to run the script. Please install cURL and try again." >&2
+  exit 1
+fi
+
+# Check for Wget
+if ! wget --version &> /dev/null; then
+  echo "Wget not found, which is required to run the script. Please install GNU Wget and try again." >&2
+  if [[ $(cat /proc/version 2> /dev/null) == *Microsoft* ]]; then
+    echo "Try to install it by opening a Windows command prompt and entering \"wsl -e sudo apt install wget\"." >&2
+  fi
+  exit 1
+fi
 
 # Exit if FTP server is not running or does not reply within 5 seconds
-debug_message "Checking connection."
+[[ $debug ]] && debug_message "Checking FTP connection ..."
 curl $curl_verbose --max-time 5 --silent --head "$root/" > /dev/null
 case $? in
   0) ;;
@@ -823,10 +844,12 @@ fi
 
 # Check for KILL command support
 if curl --head --quote KILL "$root" 2> /dev/null; then
-  debug_message "Server supports the KILL command, which is great."
+  [[ $debug ]] && debug_message \
+    "Server supports the KILL command, which is great."
   kill_switch=1;
 else
-  warning_message "Server does not support the KILL command - subsequent dumps may become slower each time."
+  warning_message \
+    "Server does not support the KILL command - subsequent dumps may become slower each time."
 fi
 
 # Create output directory
@@ -850,16 +873,17 @@ fi
 if [[ $decrypt ]]; then
   enable_decryption
 else
-  debug_message "Not telling the server to enable SELF decryption." >&2
+  [[ $debug ]] && debug_message \
+    "Not telling the server to enable SELF decryption." >&2
 fi
 
 # User-provided file or directory
 if [[ $dump_path ]]; then
   if [[ ${dump_path##*/} ]]; then
-    debug_message "Treating as file: \"$dump_path\""
+    [[ $debug ]] && debug_message "Treating as file: \"$dump_path\""
     dump_file "$root/$dump_path"
   else
-    debug_message "Treating as directory: \"$dump_path\""
+    [[ $debug ]] && debug_message "Treating as directory: \"$dump_path\""
     dump_dir "$root/$dump_path"
   fi
   check_for_errors_and_exit
@@ -917,7 +941,7 @@ fi
 # Dump patch data --------------------------------------------------------------
 
 if [[ $dump_patch ]]; then
-  debug_message "Checking if patch data exists"
+  [[ $debug ]] && debug_message "Checking if patch data exists"
   curl --silent --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" > /dev/null
   if [[ $? == 0 ]]; then
     get_download_size \
@@ -952,11 +976,11 @@ fi
 # Dump DLC data ----------------------------------------------------------------
 
 if [[ $dump_dlc ]]; then
-  debug_message "Checking if DLC data exists."
+  [[ $debug ]] && debug_message "Checking if DLC data exists."
   unset dlc_dirs
   while read line; do
     if [[ $line == d*$title_id*-ac ]]; then
-      debug_message "Found DLC directory ${line##* }"
+      [[ $debug ]] && debug_message "Found DLC directory ${line##* }"
       dlc_dirs+="${line##* } "
     fi
   done < <(curl --silent "$root/mnt/sandbox/pfsmnt/")
