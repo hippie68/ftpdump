@@ -54,7 +54,7 @@ General usage:
                         payload that understands the command, it will stop running.
           --use-pfs     Instead of downloading files separately, download and
                         extract the PFS image file.
-      -v, --verbose     Increase cURL's verbosity to see the client/server dialog.
+      -v, --verbose     Print the FTP client/server dialog while downloading files.
 
 By default, app, patch, and DLC data will be dumped. If no output directory is specified, the current directory will be used.
 
@@ -85,6 +85,8 @@ You can enable debug messages and/or see cURL's status messages by using options
 To compare the dumped directory with a reference dump (e.g. one created by a dumper payload), type:
 
     diff -r DUMP_DIRECTORY_1 DUMP_DIRECTORY_2
+
+Please note that GoldHEN 2.0's FTP server uses a different decrypting method. Which means some .sprx files may differ due to stripped zeros, but they should be fully functional.
 
 If the script does not run as expected, please report bugs at https://github.com/hippie68/ftpdump/issues.
 
