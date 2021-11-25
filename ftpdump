@@ -62,7 +62,7 @@ Options:
                     payload that understands the command, it will stop running.
       --use-pfs     Instead of downloading files separately, download and
                     extract the PFS image file.
-  -v, --verbose     Increase cURL's verbosity to see the client/server dialog.
+  -v, --verbose     Print the FTP client/server dialog while downloading files.
 EOF
 }
 
@@ -114,6 +114,14 @@ clean_exit() {
   kill $(jobs -p) 2> /dev/null
   wait
   kill_downloads
+  if [[ -f "$error_file" ]]; then
+    if [[ -s "$error_file" ]]; then
+      echo "Error log:"
+      cat "$error_file"
+    fi
+    rm "$error_file" 2> /dev/null || echo \
+      "Could not remove temporary file \"$error_file\". Please remove it manually." >&2
+  fi
   if [[ $2 ]]; then
     echo "$2"
   fi
@@ -131,7 +139,7 @@ abort() {
   if [[ $1 ]]; then
     echo "$1" >&2
     # Log the message in the error log file
-    echo "[$(date)] $1" >> "$error_file"
+    [[ -f "$error_file" ]] && echo "[$(date)] $1" >> "$error_file"
   fi
 
   if [[ $2 ]]; then
@@ -148,7 +156,7 @@ abort() {
 
 # Used by the main process to check if errors occured during jobs
 check_for_errors() {
-  if [[ -e "$error_file" ]]; then
+  if [[ -s "$error_file" ]]; then
     abort
   fi
 }
@@ -164,11 +172,11 @@ check_for_errors_and_exit() {
 # Called when cURL encounters an error
 # $1: optional file name
 curl_error() {
-  message="cURL reported error $? (see https://curl.se/libcurl/c/libcurl-errors.html)."
+  local message="cURL reported error $? (see https://curl.se/libcurl/c/libcurl-errors.html)."
   if [[ $1 ]]; then
     message="\"${1#$root}\": $message"
   fi
-  [[ $debug ]] && debug_message "cURL's message: $message"
+  [[ $curl_verbose ]] && echo -e "\e[39m" # Reset verbose color
   abort "$message"
 }
 
@@ -199,13 +207,11 @@ realpath() {
 # Prints an overall progress percentage in front of each download's file name
 # while dumping app/patch
 print_download_progress() {
-  if [[ $download_progress_enabled ]]; then
-    local result=$((downloaded_bytes * 100 / download_size))
-    if [[ $result -gt 100 ]]; then
-      result=100
-    fi
-    echo -en "$result% "
+  local result=$((downloaded_bytes * 100 / download_size))
+  if [[ $result -gt 100 ]]; then
+    result=100
   fi
+  echo -en "$result% "
 }
 
 # $1: expected download size
@@ -225,8 +231,7 @@ disable_download_progress() {
 dump_file() {
   local new_file=${1##*/}
 
-  echo -e "\e[2K\r$new_file"
-  print_download_progress
+  [[ $curl_verbose ]] && echo -en "\e[2K\e[36m"
 
   # Download partial file
   if [[ $2 ]]; then
@@ -239,6 +244,8 @@ dump_file() {
     curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
       > "$new_file" || curl_error "$1"
   fi
+
+  echo -e "\e[2K\r\e[39m$new_file"
 }
 
 # Recursively downloads an FTP directory with GNU Wget
@@ -258,7 +265,7 @@ dump_dir() {
 
   # Download directory recursively
   while read -r line; do
-    if [[ $line == *"->"* ]]; then
+    if [[ $line == *" ->"* ]]; then
       file_name=${line%\"*}
       file_size=${file_name%]*}
       file_size=${file_size##*[}
@@ -266,12 +273,16 @@ dump_dir() {
       if [[ $file_name != *.listing ]]; then # Ignore Wget's temporary files
         echo -e "\e[2K\r$file_name"
         # Update download progress
-        ((downloaded_bytes += file_size))
-        print_download_progress
+        if [[ $download_progress_enabled ]]; then
+          ((downloaded_bytes += file_size))
+          print_download_progress
+        fi
       fi
+    elif [[ $wget_verbose && $line != "" ]]; then
+      echo -e "\e[36m$line\e[39m"
     fi
   done < <(wget --cut-dirs $dir_count --no-host-directories --no-verbose \
-    --recursive --level inf "$1" 2>&1 || abort "Wget reported an error.")
+    --recursive $wget_verbose --level inf "$1" 2>&1 || wget_error $?)
 }
 
 # Enables SELF decryption, which the FTP server must support
@@ -281,9 +292,9 @@ enable_decryption() {
   if [[ $? != 0 ]]; then
     curl -v --silent --quote DECRYPT "$root" 2>&1 \
       | grep "SELF decryption enabled" > /dev/null
-    if [[ $? != 0 ]]; then
+    if [[ $? != 0 && ! $goldhen_2 ]]; then
       echo "Could not enable SELF decryption. Please try a different FTP server or ignore this by using option --no-decrypt." >&2
-      exit 1
+      clean_exit 1
     fi
   fi
 
@@ -428,7 +439,7 @@ dump_and_extract_pkg() {
   # Test how much PKG data should be downloaded
   [[ $debug ]] && debug_message \
     "Dumping 48 bytes from $pkg_filename to get body size."
-  dump_file "$1" 0 48 > /dev/null
+  dump_file "$1" 0 48
   body_offset=$(read_integer "$pkg_filename" 36)
   [[ $debug ]] && debug_message "Body offset: $body_offset"
   body_size=$(read_integer "$pkg_filename" 44)
@@ -437,7 +448,7 @@ dump_and_extract_pkg() {
   # Download PKG body and extract PKG files
   [[ $debug ]] && debug_message \
     "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)."
-  dump_file "$1" 0 $((body_offset + body_size)) > /dev/null
+  dump_file "$1" 0 $((body_offset + body_size))
   extract_pkg "$pkg_filename"
 
   rm "$pkg_filename" || abort \
@@ -462,7 +473,7 @@ replace_encrypted_trophies() {
       return
     fi
 
-    echo "Checking trophy files for encryption."
+    echo "Checking trophy files for encryption ..."
 
     read magic_number < <(dd if="$trophy_file" bs=1 count=3 2> /dev/null)
 
@@ -646,16 +657,9 @@ replace_encrypted_files() {
 LC_ALL=C
 main_pid=$BASHPID
 decrypt=1
-error_file="$(pwd)/error_log.txt" # Used by the main process to spot failed jobs
+error_file=$(mktemp 2> /dev/null) # Used by the main process to spot failed jobs
 
 trap sigint_exit SIGINT # To catch CTRL-C
-
-# Remove old error log file
-rm "$error_file" 2> /dev/null
-if [[ -e "$error_file" ]]; then
-  echo "Could not remove the old error log file \"$error_file\". Please remove it before starting the script." 2>&1
-  exit 1
-fi
 
 # Get options
 build_args "$@"
@@ -673,7 +677,7 @@ for ((i = 0; i < argc; i++)); do
           dump_path=${argv[i]}
         else
           echo "Missing argument for option --dump." >&2
-          exit 1
+          clean_exit 1
         fi
         ;;
       --debug) debug=1 ;;
@@ -686,11 +690,11 @@ for ((i = 0; i < argc; i++)); do
           else
             echo "First non-option argument needs to follow --extract-pfs." >&2
             print_usage >&2
-            exit 1
+            clean_exit 1
           fi
         else
           echo "Missing argument for option --extract-pfs." >&2
-          exit 1
+          clean_exit 1
         fi
         ;;
       --extract-pkg)
@@ -701,16 +705,16 @@ for ((i = 0; i < argc; i++)); do
           else
             echo "First non-option argument needs to follow --extract-pkg." >&2
             print_usage >&2
-            exit 1
+            clean_exit 1
           fi
         else
           echo "Missing argument for option --extract-pkg." >&2
-          exit 1
+          clean_exit 1
         fi
         ;;
       -h|--help)
         print_usage
-        exit 0
+        clean_exit 0
         ;;
       -k|--keystone) dump_keystone=1 ;;
       --no-decrypt) unset decrypt ;;
@@ -718,11 +722,14 @@ for ((i = 0; i < argc; i++)); do
       -s|--sflash|--sflash0) dump_sflash=1 ;;
       --shutdown) shutdown=1 ;;
       --use-pfs) pfs_extraction_enabled=1 ;;
-      -v|--verbose) curl_verbose=-v ;;
+      -v|--verbose)
+        curl_verbose=-v
+        wget_verbose=-S
+        ;;
       -*)
         echo "Unknown option: ${argv[i]}" >&2
         print_usage >&2
-        exit 1
+        clean_exit 1
         ;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
@@ -732,7 +739,7 @@ done
 # Set dd options
 dd --version | grep GNU > /dev/null
 if [[ $? == 0 ]]; then
-  [[ $debug ]] && debug_message "GNU dd detected - using GNU dd options."
+  [[ $debug ]] && debug_message "GNU dd detected - using GNU-specific dd options."
   dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
 else
   [[ $debug ]] && debug_message \
@@ -754,7 +761,7 @@ if [[ $pfs_extraction_mode ]]; then
   pfs_file=$(realpath "${non_options[0]}")
   if [[ ! -f "$pfs_file" ]]; then
     echo "File does not exist: \"$pfs_file\"." >&2
-    exit 1
+    clean_exit 1
   fi
   mkdir --parents "$output_dir" && cd "$output_dir" || abort
   extract_pfs_image "$pfs_file"
@@ -766,7 +773,7 @@ if [[ $pkg_extraction_mode ]]; then
   pkg_file=$(realpath "${non_options[0]}")
   if [[ ! -f "$pkg_file" ]]; then
     echo "File does not exist: \"$pkg_file\"." >&2
-    exit 1
+    clean_exit 1
   fi
   mkdir --parents "$output_dir" && cd "$output_dir" || abort
   extract_pkg "$pkg_file"
@@ -801,7 +808,7 @@ fi
 if [[ ! $ip ]]; then
   echo "Please specify a hostname or an IP address." >&2
   print_usage >&2
-  exit 1
+  clean_exit 1
 fi
 root="ftp://$ip:$port"
 [[ $debug ]] && debug_message "Using FTP server \"$root\"."
@@ -809,7 +816,7 @@ root="ftp://$ip:$port"
 # Check for cURL
 if ! curl --version &> /dev/null; then
   echo "cURL not found, which is required to run the script. Please install cURL and try again." >&2
-  exit 1
+  clean_exit 1
 fi
 
 # Check for Wget
@@ -818,18 +825,25 @@ if ! wget --version &> /dev/null; then
   if [[ $(cat /proc/version 2> /dev/null) == *Microsoft* ]]; then
     echo "Try to install it by opening a Windows command prompt and entering \"wsl -e sudo apt install wget\"." >&2
   fi
-  exit 1
+  clean_exit 1
 fi
 
 # Exit if FTP server is not running or does not reply within 5 seconds
 [[ $debug ]] && debug_message "Checking FTP connection ..."
-curl $curl_verbose --max-time 5 --silent --head "$root/" > /dev/null
+reply=$(curl --verbose --max-time 5 --silent --head "$root/" 2>&1 > /dev/null)
 case $? in
   0) ;;
   6) abort "Could not resolve host \"$ip\". Please fix your computer's and/or router's DNS settings or enter an IP address." ;;
   7) abort "Could not connect to FTP server. Is it running, and are IP address and port correct?" ;;
   *) curl_error ;;
 esac
+
+# Check for GoldHEN FTP server
+if echo "$reply" | grep "GoldHEN .*v2" > /dev/null; then
+  debug_message "GoldHEN 2.x FTP server detected."
+  goldhen_2=1
+fi
+unset reply
 
 # Send SHUTDOWN command and quit
 if [[ $shutdown ]]; then
@@ -838,7 +852,7 @@ if [[ $shutdown ]]; then
     exit 0
   else
     warning_message "Server does not support the SHUTDOWN command."
-    exit 1
+    clean_exit 1
   fi
 fi
 
@@ -847,7 +861,7 @@ if curl --head --quote KILL "$root" 2> /dev/null; then
   [[ $debug ]] && debug_message \
     "Server supports the KILL command, which is great."
   kill_switch=1;
-else
+elif [[ ! $goldhen_2 ]]; then
   warning_message \
     "Server does not support the KILL command - subsequent dumps may become slower each time."
 fi
@@ -897,7 +911,7 @@ title_id=${title_id##* }
 title_id=${title_id%_*}
 if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
   echo "Could not retreive Title ID. Is the game started?" >&2
-  exit 1
+  clean_exit 1
 fi
 
 # Dump keystone ----------------------------------------------------------------
@@ -926,13 +940,12 @@ if [[ $dump_app ]]; then
   else
     enable_download_progress "$download_size"
     dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-app0/"
+    disable_download_progress
   fi
 
   mkdir --parents sce_sys && cd sce_sys || abort
   dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
   dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
-
-  disable_download_progress
 
   dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
   replace_encrypted_trophies
@@ -958,13 +971,12 @@ if [[ $dump_patch ]]; then
     else
       enable_download_progress "$download_size"
       dump_dir "$root/mnt/sandbox/pfsmnt/$title_id-patch0/"
+      disable_download_progress
     fi
 
     mkdir --parents sce_sys && cd sce_sys || abort
     dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
     dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
-
-    disable_download_progress
 
     dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
     replace_encrypted_trophies
