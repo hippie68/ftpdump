@@ -314,6 +314,21 @@ get_download_size() {
   fi
 }
 
+# Checks if keystone $1 is fake
+check_keystone() {
+  local i
+  local string
+
+  for ((i = 32; i < 64; i++)); do
+    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$i if="$1" 2>/dev/null)
+    string+=$(printf "%x" "'$byte")
+  done
+  if [[ $string == \
+    294a5ed06db170618f2eed8c424b9d828879c080cc66fbc4864f69e974deb856 ]]; then
+    warning_message "Keystone is not original."
+  fi
+}
+
 # PKG extraction: --------------------------------------------------------------
 
 # Returns a 4-byte integer, read from file $1 at offset $2 in big-endian
@@ -840,7 +855,7 @@ esac
 
 # Check for GoldHEN FTP server
 if echo "$reply" | grep "GoldHEN .*v2" > /dev/null; then
-  debug_message "GoldHEN 2.x FTP server detected."
+  [[ $debug ]] && debug_message "GoldHEN 2.x FTP server detected."
   goldhen_2=1
 fi
 unset reply
@@ -922,6 +937,8 @@ if [[ $dump_keystone ]]; then
   mkdir --parents "$title_id-keystone" && cd "$title_id-keystone" || abort
 
   dump_file "$root/mnt/sandbox/pfsmnt/$title_id-app0/sce_sys/keystone"
+
+  check_keystone keystone
 fi
 
 # Dump app data ----------------------------------------------------------------
