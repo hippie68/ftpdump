@@ -36,33 +36,33 @@ Usage: ${0##*/} [OPTIONS] HOSTNAME|IP_ADDRESS[:PORT] [OUTPUT_DIRECTORY]
 To dump more installed games, repeat steps 4) and 5).
 
 Before running the script, make sure the game is completely installed.
-Should the dumping process get interrupted, please delete partial dumps
-before trying again.
-
 Exit the script at any time by pressing CTRL-C.
 
 Options:
-  -a, --app         Dump app data.
-      --appdb       Dump app.db file and quit.
-  -d, --dlc         Dump DLC data.
-      --debug       Print debug information.
-      --debug-pfs   Print debug information while extracting a PFS image file.
-      --dump PATH   Dump specified FTP file or directory and quit.
-                    Directories must end with a slash: "PATH/".
+  -a, --app          Dump app data.
+      --appdb        Dump app.db file and quit.
+  -d, --dlc          Dump DLC data.
+      --debug        Print debug information.
+      --debug-pfs    Print debug information while extracting a PFS image file.
+      --dump PATH    Dump specified FTP file or directory and quit.
+                     Directories must end with a slash: "PATH/".
       --extract-pfs PFS_IMAGE_FILE
-                    Extract a local PFS image file and quit.
+                     Extract a local PFS image file and quit.
       --extract-pkg PKG_FILE
-                    Extract a local PKG file and quit.
-  -h, --help        Print usage information.
-  -k, --keystone    Dump original keystone.
-      --no-decrypt  Do not tell the FTP server to enable SELF decryption.
-  -p, --patch       Dump patch data.
-  -s, --sflash      Dump sflash0 file and quit.
-      --shutdown    Send the SHUTDOWN command and quit. If the FTP server is a
-                    payload that understands the command, it will stop running.
-      --use-pfs     Instead of downloading files separately, download and
-                    extract the PFS image file.
-  -v, --verbose     Print the FTP client/server dialog while downloading files.
+                     Extract a local PKG file and quit.
+  -h, --help         Print usage information.
+  -k, --keystone     Dump original keystone.
+      --keep-trying  Infinitely keep trying to connect.
+      --no-decrypt   Do not tell the FTP server to enable SELF decryption.
+  -p, --patch        Dump patch data.
+  -r, --resume       Resume a previously interrupted download. In rare cases and
+                     with most FTP servers this can corrupt decrypted files.
+  -s, --sflash       Dump sflash0 file and quit.
+      --shutdown     Send the SHUTDOWN command and quit. If the FTP server is a
+                     payload that understands the command, it will stop running.
+      --use-pfs      Instead of downloading files separately, download and
+                     extract the PFS image file.
+  -v, --verbose      Print the FTP client/server dialog while downloading files.
 EOF
 }
 
@@ -104,7 +104,7 @@ build_args() {
 # Requires the server to support the custom command KILL
 kill_downloads() {
   if [[ $kill_switch ]]; then
-    curl --head --quote KILL "$root" 2> /dev/null
+    curl $curl_options --head --quote KILL "$root" 2> /dev/null
   fi
 }
 
@@ -138,8 +138,6 @@ sigint_exit() {
 abort() {
   if [[ $1 ]]; then
     echo "$1" >&2
-    # Log the message in the error log file
-    [[ -f "$error_file" ]] && echo "[$(date)] $1" >> "$error_file"
   fi
 
   if [[ $2 ]]; then
@@ -150,6 +148,8 @@ abort() {
   if [[ $BASHPID == $main_pid ]]; then
     clean_exit 1 "Error encountered, script aborted."
   else # End the job
+    # Log the message in the error log file
+    [[ -f "$error_file" ]] && echo "[$(date)] $1" >> "$error_file"
     exit 1
   fi
 }
@@ -235,14 +235,16 @@ dump_file() {
 
   # Download partial file
   if [[ $2 ]]; then
-    curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
-      | dd "$dd_options" skip="$2" count="$3" 2> /dev/null > "$new_file" || \
-      curl_error "$1"
+    curl $curl_options $curl_verbose --silent --ignore-content-length \
+      "${1//#/%23}" | dd "$dd_options" skip="$2" count="$3" 2> /dev/null \
+      > "$new_file" || curl_error "$1"
     kill_downloads
   # Download full file
   else
-    curl $curl_verbose --silent --ignore-content-length "${1//#/%23}" \
-      > "$new_file" || curl_error "$1"
+    while read -r line; do
+      [[ $line && $line != *" -> "* ]] && echo "$line"
+    done < <(wget --no-verbose $wget_options $wget_resume $wget_verbose \
+      "$1" --output-document "$new_file" 2>&1 || wget_error $?)
   fi
 
   echo -e "\e[2K\r\e[39m$new_file"
@@ -282,7 +284,8 @@ dump_dir() {
       echo -e "\e[36m$line\e[39m"
     fi
   done < <(wget --cut-dirs $dir_count --no-host-directories --no-verbose \
-    --recursive $wget_verbose --level inf "$1" 2>&1 || wget_error $?)
+    --recursive $wget_options $wget_resume $wget_verbose --level inf "$1" \
+    2>&1 || wget_error $?)
 }
 
 # Enables SELF decryption, which the FTP server must support
@@ -305,7 +308,8 @@ enable_decryption() {
 
 # Sets global variable $download_size to size of FTP file $1, in bytes
 get_download_size() {
-  download_size=$(curl --silent --head "$1" | grep "Content-Length")
+  download_size=$(curl $curl_options --silent --head "$1" \
+    | grep "Content-Length")
   if [[ $? -eq 0 ]]; then
     download_size=${download_size#* }
     download_size=${download_size%[^0-9]*}
@@ -639,8 +643,8 @@ extract_pfs_image() {
 dump_and_extract_pfs_image() {
   echo "Downloading PFS image file ..."
 
-  curl $curl_verbose --progress-bar "${1//#/%23}" > "pfs_image.dat" \
-    || curl_error "$1"
+  curl $curl_options $curl_resume $curl_verbose --progress-bar --remote-name \
+    "$1" || curl_error "$1"
   extract_pfs_image "pfs_image.dat"
 
   rm "pfs_image.dat" || abort \
@@ -732,8 +736,16 @@ for ((i = 0; i < argc; i++)); do
         clean_exit 0
         ;;
       -k|--keystone) dump_keystone=1 ;;
+      --keep-trying)
+        curl_options+=" --retry 999999 --retry-delay 1 --retry-max-time 0"
+        wget_options+=" -t inf "
+        ;;
       --no-decrypt) unset decrypt ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
+      -r|--resume)
+        curl_resume="-C -"
+        wget_resume=-c
+        ;;
       -s|--sflash|--sflash0) dump_sflash=1 ;;
       --shutdown) shutdown=1 ;;
       --use-pfs) pfs_extraction_enabled=1 ;;
@@ -808,7 +820,9 @@ fi
 dump_patch=$dump_patch, dump_dlc=$dump_dlc, dump_keystone=$dump_keystone, \
 dump_sflash=$dump_sflash, dump_appdb=$dump_appdb, dump_path=$dump_path, \
 decrypt=$decrypt, debug=$debug, debug_pfs=$debug_pfs, \
-curl_verbose=$curl_verbose, pfs_extraction_enabled=$pfs_extraction_enabled"
+curl_options=$curl_options, curl_verbose=$curl_verbose, \
+wget_options=$wget_options, wget_verbose=$wget_verbose, \
+pfs_extraction_enabled=$pfs_extraction_enabled"
 
 # Set FTP prefix
 if [[ ${non_options[0]} ]]; then
@@ -921,7 +935,8 @@ fi
 #-------------------------------------------------------------------------------
 
 # For other dumps, get Title ID
-title_id=$(curl --silent "$root/mnt/sandbox/" | grep -E " CUSA[0-9]{5}_")
+title_id=$(curl $curl_options --silent "$root/mnt/sandbox/" \
+  | grep -E " CUSA[0-9]{5}_")
 title_id=${title_id##* }
 title_id=${title_id%_*}
 if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
@@ -972,7 +987,8 @@ fi
 
 if [[ $dump_patch ]]; then
   [[ $debug ]] && debug_message "Checking if patch data exists"
-  curl --silent --head "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" > /dev/null
+  curl $curl_options --silent --head \
+    "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" > /dev/null
   if [[ $? == 0 ]]; then
     get_download_size \
       "$root/mnt/sandbox/pfsmnt/$title_id-patch0-nest/pfs_image.dat"
@@ -1012,7 +1028,7 @@ if [[ $dump_dlc ]]; then
       [[ $debug ]] && debug_message "Found DLC directory ${line##* }"
       dlc_dirs+="${line##* } "
     fi
-  done < <(curl --silent "$root/mnt/sandbox/pfsmnt/")
+  done < <(curl $curl_options --silent "$root/mnt/sandbox/pfsmnt/")
 
   if [[ $dlc_dirs ]]; then
     cd "$output_dir" || abort
