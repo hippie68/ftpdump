@@ -28,33 +28,33 @@ General usage:
     To dump more installed games, repeat steps 4) and 5).
     
     Before running the script, make sure the game is completely installed.
-    Should the dumping process get interrupted, please delete partial dumps
-    before trying again.
-    
     Exit the script at any time by pressing CTRL-C.
     
     Options:
-      -a, --app         Dump app data.
-          --appdb       Dump app.db file and quit.
-      -d, --dlc         Dump DLC data.
-          --debug       Print debug information.
-          --debug-pfs   Print debug information while extracting a PFS image file.
-          --dump PATH   Dump specified FTP file or directory and quit.
-                        Directories must end with a slash: "PATH/".
+      -a, --app          Dump app data.
+          --appdb        Dump app.db file and quit.
+      -d, --dlc          Dump DLC data.
+          --debug        Print debug information.
+          --debug-pfs    Print debug information while extracting a PFS image file.
+          --dump PATH    Dump specified FTP file or directory and quit.
+                         Directories must end with a slash: "PATH/".
           --extract-pfs PFS_IMAGE_FILE
-                        Extract a local PFS image file and quit.
+                         Extract a local PFS image file and quit.
           --extract-pkg PKG_FILE
-                        Extract a local PKG file and quit.
-      -h, --help        Print usage information.
-      -k, --keystone    Dump original keystone.
-          --no-decrypt  Do not tell the FTP server to enable SELF decryption.
-      -p, --patch       Dump patch data.
-      -s, --sflash      Dump sflash0 file and quit.
-          --shutdown    Send the SHUTDOWN command and quit. If the FTP server is a
-                        payload that understands the command, it will stop running.
-          --use-pfs     Instead of downloading files separately, download and
-                        extract the PFS image file.
-      -v, --verbose     Print the FTP client/server dialog while downloading files.
+                         Extract a local PKG file and quit.
+      -h, --help         Print usage information.
+      -k, --keystone     Dump original keystone.
+          --keep-trying  Infinitely keep trying to connect.
+          --no-decrypt   Do not tell the FTP server to enable SELF decryption.
+      -p, --patch        Dump patch data.
+      -r, --resume       Resume a previously interrupted download. In rare cases and
+                         with most FTP servers this can corrupt decrypted files.
+      -s, --sflash       Dump sflash0 file and quit.
+          --shutdown     Send the SHUTDOWN command and quit. If the FTP server is a
+                         payload that understands the command, it will stop running.
+          --use-pfs      Instead of downloading files separately, download and
+                         extract the PFS image file.
+      -v, --verbose      Print the FTP client/server dialog while downloading files.
 
 By default, app, patch, and DLC data will be dumped. If no output directory is specified, the current directory will be used.
 
@@ -86,7 +86,7 @@ To compare the dumped directory with a reference dump (e.g. one created by a dum
 
     diff -r DUMP_DIRECTORY_1 DUMP_DIRECTORY_2
 
-Please note that GoldHEN 2.0's FTP server uses a different decrypting method. Which means some .sprx files may differ due to stripped zeros, but they should be fully functional.
+Please note that GoldHEN 2.0's FTP server uses a different decrypting method. Which means some .sprx files may differ due to stripped zeros, but they should be fully functional. This also means resuming decrypted files via option --resume will corrupt the files if you resume a partial dump done by a different FTP server with GoldHEN 2.0's FTP server and vice versa.
 
 If the script does not run as expected, please report bugs at https://github.com/hippie68/ftpdump/issues.
 
@@ -128,5 +128,6 @@ GNU dd will majorly improve performance when extracting PFS images.
 Current PS4 FTP servers, which are based on the same code, have some limitations that affect the script's performance:
 - Downloading different SELF files in parallel can corrupt SELF decryption, effectively making downloading in parallel a no-go.
 - Cancelling the download of huge files (which the script employs to speed things up) won't stop the server from sending the rest of the file. The result is reduced network throughput (plus in extreme cases a PS4 performance decrease). Currently this can be worked around if the FTP server supports the custom command KILL (which the script will then call).
+- When decryption is enabled, servers still report the encrypted file size, which can corrupt resuming.
 
 The updated FTP payload at https://github.com/hippie68/ps4-ftp fixes those issues. Using it is especially recommended if you plan on mass dumping in one session.
