@@ -239,15 +239,15 @@ dump_file() {
       "${1//#/%23}" | dd "$dd_options" skip="$2" count="$3" 2> /dev/null \
       > "$new_file" || curl_error "$1"
     kill_downloads
+    [[ $curl_verbose ]] && echo -en "\e[39m"
   # Download full file
   else
     while read -r line; do
       [[ $line && $line != *" -> "* ]] && echo "$line"
     done < <(wget --no-verbose $wget_options $wget_resume $wget_verbose \
       "$1" --output-document "$new_file" 2>&1 || wget_error $?)
+    echo -e "\e[2K\r\e[39m$new_file"
   fi
-
-  echo -e "\e[2K\r\e[39m$new_file"
 }
 
 # Recursively downloads an FTP directory with GNU Wget
@@ -259,11 +259,13 @@ dump_dir() {
 
   # Count number of directories for Wget
   line=${1#$root}
-  for ((i = 0; i < ${#line}; i++)); do
-    if [[ ${1:$i:1} == "/" && ${1:$((i - 1)):1} != "\\" ]]; then
+  for ((i = 1; i < ${#line}; i++)); do
+    if [[ ${line:$i:1} == "/" ]]; then
       ((dir_count++))
     fi
   done
+  [[ $debug ]] && debug_message \
+    "Dumping directory \"$line\", cutting $dir_count directories."
 
   # Download directory recursively
   while read -r line; do
@@ -283,9 +285,9 @@ dump_dir() {
     elif [[ $wget_verbose && $line != "" ]]; then
       echo -e "\e[36m$line\e[39m"
     fi
-  done < <(wget --cut-dirs $dir_count --no-host-directories --no-verbose \
-    --recursive $wget_options $wget_resume $wget_verbose --level inf "$1" \
-    2>&1 || wget_error $?)
+  done < <(wget --cut-dirs $dir_count --no-host-directories --no-parent \
+    --no-verbose --recursive $wget_options $wget_resume $wget_verbose \
+    --level inf "$1" 2>&1 || wget_error $?)
 }
 
 # Enables SELF decryption, which the FTP server must support
@@ -840,6 +842,7 @@ if [[ ! $ip ]]; then
   clean_exit 1
 fi
 root="ftp://$ip:$port"
+root=${root%/}
 [[ $debug ]] && debug_message "Using FTP server \"$root\"."
 
 # Check for cURL
@@ -924,10 +927,10 @@ fi
 if [[ $dump_path ]]; then
   if [[ ${dump_path##*/} ]]; then
     [[ $debug ]] && debug_message "Treating as file: \"$dump_path\""
-    dump_file "$root/$dump_path"
+    dump_file "$root$dump_path"
   else
     [[ $debug ]] && debug_message "Treating as directory: \"$dump_path\""
-    dump_dir "$root/$dump_path"
+    dump_dir "$root$dump_path"
   fi
   check_for_errors_and_exit
 fi
@@ -986,7 +989,7 @@ fi
 # Dump patch data --------------------------------------------------------------
 
 if [[ $dump_patch ]]; then
-  [[ $debug ]] && debug_message "Checking if patch data exists"
+  [[ $debug ]] && debug_message "Checking if patch data exists."
   curl $curl_options --silent --head \
     "$root/mnt/sandbox/pfsmnt/$title_id-patch0/" > /dev/null
   if [[ $? == 0 ]]; then
