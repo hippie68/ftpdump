@@ -108,9 +108,7 @@ Other options can be passed, too, for example:
 
     ftpdump 192.168.178.100:1337 -p --dlc
 
-To save IP and port permanently, open and edit the file "ftpdump" with a text editor that supports Unix format (Notepad should do). Alternatively, you could save them in "ftpdump.bat":
-
-    wsl -e ./ftpdump 192.168.178.100:1337 %*
+To save IP and port permanently, open and edit the file "ftpdump" with a text editor that supports Unix format (Notepad should do).
 
 If Wget is not installed by default, you can install it by opening a Windows command prompt and entering:
 
