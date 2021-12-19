@@ -337,44 +337,53 @@ check_keystone() {
 
 # PKG extraction: --------------------------------------------------------------
 
-# Returns a 4-byte integer, read from file $1 at offset $2 in big-endian
-read_integer() {
-  local result=0
+# Returns a 4-byte integer, read from a file in big-endian
+# $1: the return variable's name
+# $2: file name
+# $3: integer's offset
+read_int_be() {
+  local _result=0
   local byte
   local i
 
   for i in {0..3}; do
-    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" \
+    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($3 + i)) if="$2" \
       2> /dev/null)
     byte=$(printf "%d" "'$byte")
-    result=$((result + 256 ** (3 - i) * byte))
+    _result=$((_result + 256 ** (3 - i) * byte))
   done
 
-  echo $result
+  eval "$1=\$_result"
 }
 
-# Returns a string, read from file $1 at offset $2
+# Returns a string, read from a file as a C string (ending with \0)
+# $1: the return variable's name
+# $2: file name
+# $3: string's offset
 read_string() {
-  local result
+  local _result
   local byte
   local i=0
 
   while true; do
-    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" \
+    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($3 + i)) if="$2" \
       2> /dev/null)
     if [[ $(printf "%d" "'$byte") != 0 ]]; then
-      result+=$byte
+      _result+=$byte
     else
       break
     fi
     ((i++))
   done
 
-  echo "$result"
+  eval "$1=\$_result"
 }
 
-# Extracts a single file from PKG file $1
-# $2: offset, $3: size, $4: output file name
+# Extracts a single file from a PKG file
+# $1: PKG file name
+# $2: offset
+# $3: size
+# $4: output file name
 extract_pkg_file() {
   echo "Extracting $4"
   if [[ $4 == */* ]]; then # Create directory, if necessary
@@ -386,8 +395,10 @@ extract_pkg_file() {
 
 # Extracts all files from PKG file $1
 extract_pkg() {
-  local file_table_offset=$(read_integer "$1" $((0x18)))
-  local file_count=$(read_integer "$1" $((0x10)))
+  local file_table_offset
+  read_int_be file_table_offset "$1" $((0x18))
+  local file_count
+  read_int_be file_count "$1" $((0x10))
   local offset=$file_table_offset
   local id
   local filename_offset
@@ -399,10 +410,10 @@ extract_pkg() {
   # Loop through all entries
   local i=0
   while [[ $i -lt $file_count ]]; do
-    id=$(read_integer "$1" offset)
-    filename_offset=$(read_integer "$1" $((offset + 4)))
-    data_offset=$(read_integer "$1" $((offset + 16)))
-    size=$(read_integer "$1" $((offset + 20)))
+    read_int_be id "$1" offset
+    read_int_be filename_offset "$1" $((offset + 4))
+    read_int_be data_offset "$1" $((offset + 16))
+    read_int_be size "$1" $((offset + 20))
     if [[ $id == 512 ]]; then
       filename_table_offset=$data_offset
     fi
@@ -428,14 +439,13 @@ extract_pkg() {
         esac
       # For other files, read existing file names
       elif [[ $filename_table_offset && $filename_offset -gt 0 ]]; then
-        filename=$(read_string "$1" $((filename_table_offset + filename_offset)))
+        read_string filename "$1" $((filename_table_offset + filename_offset))
       fi
       # Extract file
-      if [[ ! -e "$filename" ]]; then
+      if [[ $resume || ! -e "$filename" ]]; then
         extract_pkg_file "$1" $data_offset $size "$filename"
       else
-        [[ $debug ]] && debug_message \
-          "Warning: file already exists: \"$filename\" (skipped)."
+        warning_message "File already exists: \"$filename\" (skipped)."
       fi
     fi
 
@@ -461,9 +471,11 @@ dump_and_extract_pkg() {
   [[ $debug ]] && debug_message \
     "Dumping 48 bytes from $pkg_filename to get body size."
   dump_file "$1" 0 48
-  body_offset=$(read_integer "$pkg_filename" 36)
+  local body_offset
+  read_int_be body_offset "$pkg_filename" 36
   [[ $debug ]] && debug_message "Body offset: $body_offset"
-  body_size=$(read_integer "$pkg_filename" 44)
+  local body_size
+  read_int_be body_size "$pkg_filename" 44
   [[ $debug ]] && debug_message "Body size: $body_size"
 
   # Download PKG body and extract PKG files
@@ -523,30 +535,38 @@ replace_encrypted_trophies() {
 # PFS extraction: --------------------------------------------------------------
 
 readonly INODE_SIZE=168
+declare -a inode_offsets
+declare superroot_inode_index
+declare block_size
 
-# Returns an integer, read from file $1 at offset $2 in little endian
-# $3: length in bytes
-read_int() {
-  local result=0
+# Returns an integer, read from a file in little-endian
+# $1: the return variable's name
+# $2: file name
+# $3: integer's offset
+# $4: integer's data length in bytes
+read_int_le() {
+  local _result=0
   local byte
   local i
 
-  for ((i = 0; i < $3; i++)); do
-    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($2 + i)) if="$1" 2>/dev/null)
+  for ((i = 0; i < $4; i++)); do
+    IFS= read -rd "" byte < <(dd bs=1 count=1 skip=$(($3 + i)) if="$2" 2>/dev/null)
     byte=$(printf "%d" "'$byte")
-    result=$((result + 256 ** i * byte))
+    _result=$((_result + 256 ** i * byte))
   done
 
-  echo $result
+  eval "$1=\$_result"
 }
 
-# Recursively extracts directories and files from decrypted PFS image file $1
-# $2: inode index; $1 must have an absolute path
+# Recursively extracts directories and files from a decrypted PFS image file
+# $1: PFS image file name; must have an absolute path
+# $2: inode index
+# $3: current extraction path; used only for cosmetics
 extract_pfs_dir() {
-  local number_of_blocks=$(read_int "$1" \
-    $((block_size + INODE_SIZE * $2 + 96)) 4)
-  local direct_blocks=$(read_int "$1" \
-    $((block_size + INODE_SIZE * $2 + 100)) 4)
+  local number_of_blocks
+  read_int_le number_of_blocks "$1" $((block_size + INODE_SIZE * $2 + 96)) 4
+  local direct_blocks
+  read_int_le direct_blocks "$1" $((block_size + INODE_SIZE * $2 + 100)) 4
   local offset=$((block_size * direct_blocks))
 
   if [[ $debug_pfs ]]; then
@@ -556,10 +576,18 @@ extract_pfs_dir() {
     debug_message "Offset: $offset"
   fi
 
+  # Warn if there are too many blocks
+  if [[ $number_of_blocks -gt $direct_blocks ]]; then
+    local indirect_blocks
+    read_int_le indirect_blocks "$1" $((block_size + INODE_SIZE * $2 + 104)) 4
+    warning_message "Inode $2 has more blocks than expected ($indirect_blocks indirect blocks)."
+  fi
+
   local cur_block
   for ((cur_block = 0; cur_block < number_of_blocks; cur_block++)); do
     while true; do
-      local dirent_inode_index=$(read_int "$1" $offset 4)
+      local dirent_inode_index
+      read_int_le dirent_inode_index "$1" $offset 4
       # Leave current block if no more directory entries
       if [[ $dirent_inode_index == 0 ]]; then
         [[ $debug_pfs ]] && debug_message \
@@ -567,17 +595,21 @@ extract_pfs_dir() {
         break
       fi
 
-      local dirent_type=$(read_int "$1" $((offset + 4)) 4)
-      local dirent_filename_len=$(read_int "$1" $((offset + 8)) 4)
-      local dirent_size=$(read_int "$1" $((offset + 12)) 4)
-      local dirent_filename=$(read_string "$1" $((offset + 16)))
+      local dirent_type
+      read_int_le dirent_type "$1" $((offset + 4)) 4
+      local dirent_size
+      read_int_le dirent_size "$1" $((offset + 12)) 4
+      local dirent_filename
+      read_string dirent_filename "$1" $((offset + 16))
 
       if [[ $debug_pfs ]]; then
         debug_message "Reading inode $2, block $cur_block, directory entry $i"
         debug_message "  -> Dirent inode index: $dirent_inode_index"
         debug_message "  -> Dirent type: $dirent_type"
-        debug_message "  -> Dirent file name length: $dirent_filename_len"
         debug_message "  -> Dirent size: $dirent_size"
+        local dirent_filename_len
+        read_int_le dirent_filename_len "$1" $((offset + 8)) 4
+        debug_message "  -> Dirent file name length: $dirent_filename_len"
         debug_message "  -> Dirent file name: $dirent_filename"
       fi
 
@@ -585,7 +617,7 @@ extract_pfs_dir() {
       case $dirent_type in
         2) # File
           if [[ $2 -ne $superroot_inode_index ]]; then
-            if [[ ! -e "$dirent_filename" ]]; then
+            if [[ $resume || ! -e "$dirent_filename" ]]; then
               check_for_errors
               # Wait if currently too many files are being extracted
               if [[ $(jobs -r | wc -l) -ge 2 ]]; then
@@ -593,31 +625,34 @@ extract_pfs_dir() {
               fi
               # Extract file in the background
               {
-                echo "Extracting $dirent_filename"
-                local file_size=$(read_int "$1" $((block_size + \
-                  dirent_inode_index * INODE_SIZE + 8)) 8)
+                echo "Extracting $3$dirent_filename"
+                local file_size
+                read_int_le file_size "$1" \
+                  $((inode_offsets[$dirent_inode_index] + 8)) 8
                 [[ $debug_pfs ]] && debug_message "File size: $file_size"
-                local file_offset=$((block_size * $(read_int "$1" \
-                  $((block_size + dirent_inode_index * INODE_SIZE + 100)) 4)))
+                local file_block_number
+                read_int_le file_block_number "$1" \
+                  $((inode_offsets[$dirent_inode_index] + 100)) 4
+                local file_offset=$((block_size * file_block_number))
                 [[ $debug_pfs ]] && debug_message "File offset: $file_offset"
                 dd if="$1" $dd_options skip=$file_offset count=$file_size \
                   2> /dev/null > "$dirent_filename" || abort \
                   "Error while extracting file \"$dirent_filename\"."
               } &
             else
-              [[ $debug ]] && debug_message \
-                "Warning: File already exists: \"$dirent_filename\" (skipped)."
+              warning_message \
+                "File already exists: \"$3$dirent_filename\" (skipped)."
             fi
           fi
           ;;
         3) # Directory
           if [[ $2 -eq $superroot_inode_index ]]; then
-            extract_pfs_dir "$1" $dirent_inode_index # Extract true root dir
+            extract_pfs_dir "$1" $dirent_inode_index "" # Extract true root dir
           else
-            echo "Extracting $dirent_filename/"
+            echo "Extracting $3$dirent_filename/"
             mkdir --parents "$dirent_filename" || abort
             cd "$dirent_filename" || abort
-            extract_pfs_dir "$1" $dirent_inode_index # Extract next directory
+            extract_pfs_dir "$1" $dirent_inode_index "$3$dirent_filename/" # Extract next directory
             cd .. || abort
             [[ $debug_pfs ]] && debug_message \
               "Returning to previous directory (inode $2)"
@@ -633,9 +668,26 @@ extract_pfs_dir() {
 # Extracts all files from PFS image file $1
 extract_pfs_image() {
   [[ $debug ]] && debug_message "Extracting PFS image file \"$1\"."
-  superroot_inode_index=$(read_int "$1" 72 8)
-  block_size=$(read_int "$1" 32 4)
-  extract_pfs_dir "$(realpath "$1")" $superroot_inode_index
+  read_int_le superroot_inode_index "$1" 72 8
+  read_int_le block_size "$1" 32 4
+
+  # Load inode offsets
+  local number_of_inodes
+  read_int_le number_of_inodes "$1" 48 8
+  local offset=block_size
+  local gap
+  local i
+  inode_offsets=()
+  for ((i = 0; i < $number_of_inodes; i++)) {
+    gap=$((block_size - offset % block_size))
+    if [[ $gap -lt $INODE_SIZE ]]; then
+      offset=$((offset + gap))
+    fi
+    inode_offsets[$i]=$offset
+    offset=$((offset + INODE_SIZE))
+  }
+
+  extract_pfs_dir "$(realpath "$1")" $superroot_inode_index ""
   echo "Waiting for extraction to finish ..."
   wait
   check_for_errors
@@ -661,7 +713,7 @@ replace_encrypted_files() {
   find . -type f -print0 | while read -d $'\0' file_path; do
     file_name=${file_path#./}
     [[ $debug ]] && debug_message "Checking $file_name"
-    magic_number=$(read_integer "$file_name" 0)
+    read_int_be magic_number "$file_name" 0
     # File is encrypted
     if [[ $magic_number == 1326791965 ]]; then
       dir="${file_path%/*}"
@@ -745,6 +797,7 @@ for ((i = 0; i < argc; i++)); do
       --no-decrypt) unset decrypt ;;
       -p|--patch|--patch-only) dump_patch=1 ;;
       -r|--resume)
+        resume=1
         curl_resume="-C -"
         wget_resume=-c
         ;;
@@ -979,10 +1032,10 @@ if [[ $dump_app ]]; then
   fi
 
   mkdir --parents sce_sys && cd sce_sys || abort
+  dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
+  echo "Replacing npbind.dat and nptitle.dat ..."
   dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
   dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
-
-  dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
   replace_encrypted_trophies
 fi
 
@@ -1011,10 +1064,10 @@ if [[ $dump_patch ]]; then
     fi
 
     mkdir --parents sce_sys && cd sce_sys || abort
+    dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
+    echo "Replacing npbind.dat and nptitle.dat ..."
     dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
     dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
-
-    dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
     replace_encrypted_trophies
   else
     echo "No patch data found."
