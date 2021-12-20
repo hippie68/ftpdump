@@ -41,6 +41,7 @@ Exit the script at any time by pressing CTRL-C.
 Options:
   -a, --app          Dump app data.
       --appdb        Dump app.db file and quit.
+      --beep         Beep when done.
   -d, --dlc          Dump DLC data.
       --debug        Print debug information.
       --debug-pfs    Print debug information while extracting a PFS image file.
@@ -100,6 +101,28 @@ build_args() {
   [[ $debug ]] && debug_message "Expanded arguments: ${argv[*]}"
 }
 
+# Beeps to signal script completion
+beep_function() {
+  # Only beep for larger tasks or when explicitly enabled
+  if [[ ($beep == true && $dump_app$dump_patch$dump_dlc) || $force_beep ]]; then
+    trap exit SIGINT
+    printf "\n(Press CTRL-C to stop beeping.)\n"
+
+    if [[ ! $beep_time ]]; then
+      beep_time=60
+    fi
+    if [[ ! $beep_interval ]]; then
+      beep_interval=3
+    fi
+    local i=0
+    while [[ $i -le $beep_time ]]; do
+      echo -en "\a"
+      sleep $beep_interval
+      ((i += beep_interval))
+    done
+  fi
+}
+
 # Stops all downloads the FTP server might still be trying to send
 # Requires the server to support the custom command KILL
 kill_downloads() {
@@ -111,11 +134,13 @@ kill_downloads() {
 # Properly stops all downloads, then exits the script
 # $1: exit code, $2: optional message
 clean_exit() {
+  local exit_code=$1
   kill $(jobs -p) 2> /dev/null
   wait
   kill_downloads
   if [[ -f "$error_file" ]]; then
     if [[ -s "$error_file" ]]; then
+      [[ $exit_code -eq 0 ]] && exit_code=1
       echo "Error log:"
       cat "$error_file"
     fi
@@ -125,11 +150,15 @@ clean_exit() {
   if [[ $2 ]]; then
     echo "$2"
   fi
-  exit $1
+  [[ $exit_code -eq 0 ]] && echo "Done."
+  beep_function
+  exit $exit_code
 }
 
 # User has pressed CTRL-C or sent SIGINT otherwise
 sigint_exit() {
+  unset beep
+  unset force_beep
   clean_exit 0 "Script aborted by user."
 }
 
@@ -161,14 +190,6 @@ check_for_errors() {
   fi
 }
 
-# Used by the main process before the script exits, as a final job error check
-check_for_errors_and_exit() {
-  wait
-  check_for_errors
-  echo "Done."
-  exit 0
-}
-
 # Called when cURL encounters an error
 # $1: optional file name
 curl_error() {
@@ -196,7 +217,7 @@ wget_error() {
     8) e="Server issued an error response" ;;
     *) e="Unknown error (see https://www.gnu.org/software/wget/manual/html_node/Exit-Status.html" ;;
   esac
-  abort "Wget reported error $1: $e."
+  abort "Wget reported error $1: \"$e.\""
 }
 
 # Portable replacement for GNU realpath
@@ -231,7 +252,7 @@ disable_download_progress() {
 dump_file() {
   local new_file=${1##*/}
 
-  [[ $curl_verbose ]] && echo -en "\e[2K\e[36m"
+  [[ $verbose ]] && echo -en "\e[2K\e[36m"
 
   # Download partial file
   if [[ $2 ]]; then
@@ -239,13 +260,29 @@ dump_file() {
       "${1//#/%23}" | dd "$dd_options" skip="$2" count="$3" 2> /dev/null \
       > "$new_file" || curl_error "$1"
     kill_downloads
-    [[ $curl_verbose ]] && echo -en "\e[39m"
+    [[ $verbose ]] && echo -en "\e[39m"
   # Download full file
   else
-    while read -r line; do
-      [[ $line && $line != *" -> "* ]] && echo "$line"
-    done < <(wget --no-verbose $wget_options $wget_resume $wget_verbose \
-      "$1" --output-document "$new_file" 2>&1 || wget_error $?)
+    wget --no-verbose $wget_options $wget_resume $wget_verbose \
+      "$1" --output-document "$new_file" 2>&1 | \
+      while read -r line; do
+        [[ $line && $line != *" -> "* ]] && echo "$line"
+      done
+
+    # Abort script if download has failed
+    local result=${PIPESTATUS[0]}
+    if [[ $result -gt 0 ]]; then
+      # Remove file if its size is 0
+      if [[ -f "$new_file" && ! -s "$new_file" ]]; then
+        [[ $debug ]] && debug_message \
+          "Download failed - removing empty file \"$new_file\"."
+        rm "$new_file" &> /dev/null
+      fi
+
+      [[ $verbose ]] && echo -en "\e[39m"
+      wget_error $result
+    fi
+
     echo -e "\e[2K\r\e[39m$new_file"
   fi
 }
@@ -268,26 +305,34 @@ dump_dir() {
     "Dumping directory \"$line\", cutting $dir_count directories."
 
   # Download directory recursively
-  while read -r line; do
-    if [[ $line == *" ->"* ]]; then
-      file_name=${line%\"*}
-      file_size=${file_name%]*}
-      file_size=${file_size##*[}
-      file_name=${file_name##*\"}
-      if [[ $file_name != *.listing ]]; then # Ignore Wget's temporary files
-        echo -e "\e[2K\r$file_name"
-        # Update download progress
-        if [[ $download_progress_enabled ]]; then
-          ((downloaded_bytes += file_size))
-          print_download_progress
-        fi
-      fi
-    elif [[ $wget_verbose && $line != "" ]]; then
-      echo -e "\e[36m$line\e[39m"
-    fi
-  done < <(wget --cut-dirs $dir_count --no-host-directories --no-parent \
+  wget --cut-dirs $dir_count --no-host-directories --no-parent \
     --no-verbose --recursive $wget_options $wget_resume $wget_verbose \
-    --level inf "$1" 2>&1 || wget_error $?)
+    --level inf "$1" 2>&1 | \
+    while read -r line; do
+      if [[ $line == *" ->"* ]]; then
+        file_name=${line%\"*}
+        file_size=${file_name%]*}
+        file_size=${file_size##*[}
+        file_name=${file_name##*\"}
+        file_name=${file_name%.listing} # Wget's temporary files
+        if [[ $file_name ]]; then
+          echo -e "\e[2K\r$file_name"
+          # Update download progress
+          if [[ $download_progress_enabled ]]; then
+            ((downloaded_bytes += file_size))
+            print_download_progress
+          fi
+        fi
+      elif [[ $verbose && $line != "" ]]; then
+        echo -e "\e[36m$line\e[39m"
+      fi
+    done
+
+  # Abort script if download has failed
+  local result=${PIPESTATUS[0]}
+  if [[ $result -gt 0 ]]; then
+    wget_error $result
+  fi
 }
 
 # Enables SELF decryption, which the FTP server must support
@@ -509,7 +554,6 @@ replace_encrypted_trophies() {
     echo "Checking trophy files for encryption ..."
 
     read magic_number < <(dd if="$trophy_file" bs=1 count=3 2> /dev/null)
-
     if [[ $magic_number == $(printf "\xdc\xa2\x4d") ]]; then
       echo "File \"${trophy_file##*/}\" is not encrypted."
     else
@@ -522,9 +566,8 @@ replace_encrypted_trophies() {
           > /dev/null
         mv TROPHY.TRP "$trophy_file" || abort
       else
-        echo
-          critical_message \
-            "Could not find unencrypted version of \"${trophy_file##*/}\"." >&2
+        critical_message \
+          "Could not find unencrypted version of \"${trophy_file##*/}\"." >&2
       fi
     fi
 
@@ -730,7 +773,6 @@ replace_encrypted_files() {
 LC_ALL=C
 main_pid=$BASHPID
 decrypt=1
-error_file=$(mktemp 2> /dev/null) # Used by the main process to spot failed jobs
 
 trap sigint_exit SIGINT # To catch CTRL-C
 
@@ -744,13 +786,14 @@ for ((i = 0; i < argc; i++)); do
       --) no_more_args=1 ;;
       -a|-g|--app|--game|--app-only) dump_app=1 ;;
       --appdb) dump_appdb=1 ;;
+      --beep) force_beep=1 ;;
       -d|--ac|--dlc|--dlc-only) dump_dlc=1 ;;
       --dump)
         if [[ $((++i)) -lt argc ]]; then
           dump_path=${argv[i]}
         else
           echo "Missing argument for option --dump." >&2
-          clean_exit 1
+          exit 1
         fi
         ;;
       --debug) debug=1 ;;
@@ -763,11 +806,11 @@ for ((i = 0; i < argc; i++)); do
           else
             echo "First non-option argument needs to follow --extract-pfs." >&2
             print_usage >&2
-            clean_exit 1
+            exit 1
           fi
         else
           echo "Missing argument for option --extract-pfs." >&2
-          clean_exit 1
+          exit 1
         fi
         ;;
       --extract-pkg)
@@ -778,16 +821,16 @@ for ((i = 0; i < argc; i++)); do
           else
             echo "First non-option argument needs to follow --extract-pkg." >&2
             print_usage >&2
-            clean_exit 1
+            exit 1
           fi
         else
           echo "Missing argument for option --extract-pkg." >&2
-          clean_exit 1
+          exit 1
         fi
         ;;
       -h|--help)
         print_usage
-        clean_exit 0
+        exit 0
         ;;
       -k|--keystone) dump_keystone=1 ;;
       --keep-trying)
@@ -805,18 +848,23 @@ for ((i = 0; i < argc; i++)); do
       --shutdown) shutdown=1 ;;
       --use-pfs) pfs_extraction_enabled=1 ;;
       -v|--verbose)
+        verbose=1
         curl_verbose=-v
         wget_verbose=-S
         ;;
       -*)
         echo "Unknown option: ${argv[i]}" >&2
         print_usage >&2
-        clean_exit 1
+        exit 1
         ;;
       *) non_options[noptc++]=${argv[i]} ;;
     esac
   fi
 done
+
+# Temporary file used by the main process to spot failed jobs
+# From here on out, only exit with function clean_exit (which deletes the file)
+error_file=$(mktemp 2> /dev/null)
 
 # Set dd options
 dd --version | grep GNU > /dev/null
@@ -847,7 +895,7 @@ if [[ $pfs_extraction_mode ]]; then
   fi
   mkdir --parents "$output_dir" && cd "$output_dir" || abort
   extract_pfs_image "$pfs_file"
-  exit 0
+  clean_exit 0
 fi
 
 # PKG file extraction (option --extract-pkg)
@@ -859,7 +907,7 @@ if [[ $pkg_extraction_mode ]]; then
   fi
   mkdir --parents "$output_dir" && cd "$output_dir" || abort
   extract_pkg "$pkg_file"
-  exit 0
+  clean_exit 0
 fi
 
 # Dump everything by default
@@ -959,13 +1007,13 @@ mkdir --parents "$output_dir" && cd "$output_dir" || abort
 # Database
 if [[ $dump_appdb ]]; then
   dump_file "$root/system_data/priv/mms/app.db"
-  check_for_errors_and_exit
+  clean_exit 0
 fi
 
 # sflash0
 if [[ $dump_sflash ]]; then
   dump_file "$root/dev/sflash0"
-  check_for_errors_and_exit
+  clean_exit 0
 fi
 
 # Enable decryption, which might be needed from now on
@@ -985,7 +1033,7 @@ if [[ $dump_path ]]; then
     [[ $debug ]] && debug_message "Treating as directory: \"$dump_path\""
     dump_dir "$root$dump_path"
   fi
-  check_for_errors_and_exit
+  clean_exit 0
 fi
 
 #-------------------------------------------------------------------------------
@@ -1033,10 +1081,13 @@ if [[ $dump_app ]]; then
 
   mkdir --parents sce_sys && cd sce_sys || abort
   dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
-  echo "Replacing npbind.dat and nptitle.dat ..."
-  dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
-  dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
-  replace_encrypted_trophies
+
+  if [[ -f npbind.dat ]]; then
+    echo "Replacing npbind.dat and nptitle.dat ..."
+    dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
+    dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+    replace_encrypted_trophies
+  fi
 fi
 
 # Dump patch data --------------------------------------------------------------
@@ -1065,10 +1116,13 @@ if [[ $dump_patch ]]; then
 
     mkdir --parents sce_sys && cd sce_sys || abort
     dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
-    echo "Replacing npbind.dat and nptitle.dat ..."
-    dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
-    dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
-    replace_encrypted_trophies
+
+    if [[ -f npbind.dat ]]; then
+      echo "Replacing npbind.dat and nptitle.dat ..."
+      dump_file "$root/System_data/priv/appmeta/$title_id/npbind.dat"
+      dump_file "$root/System_data/priv/appmeta/$title_id/nptitle.dat"
+      replace_encrypted_trophies
+    fi
   else
     echo "No patch data found."
   fi
@@ -1102,21 +1156,4 @@ fi
 
 #-------------------------------------------------------------------------------
 
-# Beep when done
-if [[ $beep == true ]]; then
-  echo "Press CTRL-C to stop beeping."
-  if [[ ! $beep_time ]]; then
-    beep_time=60
-  fi
-  if [[ ! $beep_interval ]]; then
-    beep_interval=3
-  fi
-  i=0
-  while [[ $i -le $beep_time ]]; do
-    echo -en "\a"
-    sleep $beep_interval
-    ((i += beep_interval))
-  done
-fi
-
-check_for_errors_and_exit
+clean_exit 0
