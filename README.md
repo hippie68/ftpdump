@@ -33,6 +33,7 @@ General usage:
     Options:
       -a, --app          Dump app data.
           --appdb        Dump app.db file and quit.
+          --beep         Beep when done.
       -d, --dlc          Dump DLC data.
           --debug        Print debug information.
           --debug-pfs    Print debug information while extracting a PFS image file.
@@ -77,6 +78,7 @@ The PC speaker can be used to beep when a dump is complete:
     beep_interval=3 (in seconds)
 
 Depending on your computer and operating system, you might not have a PC speaker or must enable it first.
+By default, the script will only beep when dumping app/patch/DLC data, unless option --beep is specified.
 
 ### Troubleshooting
 
