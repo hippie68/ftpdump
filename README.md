@@ -117,9 +117,9 @@ If Wget is not installed by default, you can install it by opening a Windows com
     wsl -e sudo apt install wget
 
 ### For macOS users:
-You need to install Wget, and having GNU dd (part of coreutils) instead of the default macOS dd could improve the overall dumping speed slightly:
+You need to install Wget, you might need to update your Bash version, and having GNU dd (part of coreutils) instead of the default macOS dd could improve the overall dumping speed slightly:
 
-    brew install coreutils wget
+    brew install bash coreutils wget
 
 GNU dd will majorly improve performance when extracting PFS images.
 
