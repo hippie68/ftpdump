@@ -73,10 +73,12 @@ debug_message() {
 
 warning_message() {
   echo -e "\r\e[93mWARNING: $1\e[39m" >&2
+  ((warnings++))
 }
 
 critical_message() {
   echo -e "\r\e[91mCRITICAL: $1\e[39m" >&2
+  ((criticals++))
 }
 
 # Parses command line arguments, creating C-like argc and argv; called with $@
@@ -151,6 +153,8 @@ clean_exit() {
     echo "$2"
   fi
   [[ $exit_code -eq 0 ]] && echo "Done."
+  [[ $warnings -gt 0 ]] && echo -e "\e[93m$warnings\e[39m warning message(s)."
+  [[ $criticals -gt 0 ]] && echo -e "\e[91m$criticals\e[39m critical message(s)."
   beep_function
   exit $exit_code
 }
@@ -463,9 +467,16 @@ extract_pkg() {
       filename_table_offset=$data_offset
     fi
 
+    if [[ $debug ]]; then
+      debug_message "$(printf "ID: %#x\n" $id)"
+      debug_message "File name offset: $filename_offset"
+      debug_message "Data offset: $data_offset"
+      debug_message "Size: $size"
+    fi
+
     # Extract entries that are files
     if [[ $id -ge 1024 ]]; then
-      # For files that have no name, create file names
+      # For files that have no name, create file name
       if [[ $id -lt 4096 ]]; then
         case $id in
           1024) filename=license.dat ;; # 0x400
@@ -486,19 +497,13 @@ extract_pkg() {
       elif [[ $filename_table_offset && $filename_offset -gt 0 ]]; then
         read_string filename "$1" $((filename_table_offset + filename_offset))
       fi
+      [[ $debug ]] && debug_message "File name: \"$filename\""
       # Extract file
       if [[ $resume || ! -e "$filename" ]]; then
         extract_pkg_file "$1" $data_offset $size "$filename"
       else
         warning_message "File already exists: \"$filename\" (skipped)."
       fi
-    fi
-
-    if [[ $debug ]]; then
-      debug_message "$(printf "ID: %#x\n" $id)"
-      debug_message "Filename offset: $filename_offset"
-      debug_message "Data offset: $data_offset"
-      debug_message "Size: $size"
     fi
 
     ((i++))
@@ -527,6 +532,7 @@ dump_and_extract_pkg() {
   [[ $debug ]] && debug_message \
     "Dumping body from $pkg_filename ($((body_offset + body_size)) bytes)."
   dump_file "$1" 0 $((body_offset + body_size))
+  [[ $debug ]] && debug_message "Extracting ..."
   extract_pkg "$pkg_filename"
 
   rm "$pkg_filename" || abort \
@@ -693,7 +699,7 @@ extract_pfs_dir() {
             extract_pfs_dir "$1" $dirent_inode_index "" # Extract true root dir
           else
             echo "Extracting $3$dirent_filename/"
-            mkdir --parents "$dirent_filename" || abort
+            mkdir -p "$dirent_filename" || abort
             cd "$dirent_filename" || abort
             extract_pfs_dir "$1" $dirent_inode_index "$3$dirent_filename/" # Extract next directory
             cd .. || abort
@@ -766,6 +772,15 @@ replace_encrypted_files() {
       cd - > /dev/null || abort
     fi
   done
+}
+
+# Checks if an FTP file exists
+ftp_file_exists() {
+  if curl --head --silent "$1" &> /dev/null; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 # Main script: #################################################################
@@ -862,19 +877,35 @@ for ((i = 0; i < argc; i++)); do
   fi
 done
 
-# Temporary file used by the main process to spot failed jobs
-# From here on out, only exit with function clean_exit (which deletes the file)
-error_file=$(mktemp 2> /dev/null)
+# Check Bash version
+bash_version=$(bash --version)
+bash_version=${bash_version#*bash, version }
+full_bash_version=${bash_version%% (*}
+bash_version=${bash_version:0:1}
+if [[ $bash_version == [0-9] ]]; then
+  if [[ $bash_version -ge 5 ]]; then
+    [[ $debug ]] && debug_message "Bash version \"$full_bash_version\" detected."
+  else
+    warning_message "Your Bash version \"$full_bash_version\" is heavily outdated. The script might not run properly."
+  fi
+else
+  warning_message "Could not check the Bash version. Please report this if you encounter any script errors."
+fi
 
 # Set dd options
-dd --version | grep GNU > /dev/null
+dd --version 2> /dev/null | grep GNU > /dev/null
 if [[ $? == 0 ]]; then
   [[ $debug ]] && debug_message "GNU dd detected - using GNU-specific dd options."
   dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
 else
-  [[ $debug ]] && debug_message \
-    "Non-GNU dd detected - using regular dd options (slow!)."
-  dd_options="ibs=1"
+  gdd --version 2> /dev/null | grep GNU > /dev/null
+  if [[ $? == 0 ]]; then
+    [[ $debug ]] && debug_message "Homebrew GNU dd detected - using GNU-specific dd options."
+    dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
+  else
+    [[ $debug ]] && debug_message "Non-GNU dd detected - using regular dd options (slow!)."
+    dd_options="ibs=1"
+  fi
 fi
 
 # Set output directory
@@ -886,6 +917,10 @@ else
   [[ $debug ]] && debug_message "Using current directory as output directory."
 fi
 
+# Temporary file used by the main process to spot failed jobs
+# From here on out, only exit with function clean_exit (which deletes the file)
+error_file=$(mktemp 2> /dev/null)
+
 # PFS image file extraction (option --extract-pfs)
 if [[ $pfs_extraction_mode ]]; then
   pfs_file=$(realpath "${non_options[0]}")
@@ -893,7 +928,7 @@ if [[ $pfs_extraction_mode ]]; then
     echo "File does not exist: \"$pfs_file\"." >&2
     clean_exit 1
   fi
-  mkdir --parents "$output_dir" && cd "$output_dir" || abort
+  mkdir -p "$output_dir" && cd "$output_dir" || abort
   extract_pfs_image "$pfs_file"
   clean_exit 0
 fi
@@ -905,7 +940,7 @@ if [[ $pkg_extraction_mode ]]; then
     echo "File does not exist: \"$pkg_file\"." >&2
     clean_exit 1
   fi
-  mkdir --parents "$output_dir" && cd "$output_dir" || abort
+  mkdir -p "$output_dir" && cd "$output_dir" || abort
   extract_pkg "$pkg_file"
   clean_exit 0
 fi
@@ -1000,7 +1035,7 @@ elif [[ ! $goldhen_2 ]]; then
 fi
 
 # Create output directory
-mkdir --parents "$output_dir" && cd "$output_dir" || abort
+mkdir -p "$output_dir" && cd "$output_dir" || abort
 
 # Single-file dumps  -----------------------------------------------------------
 
@@ -1044,7 +1079,7 @@ title_id=$(curl $curl_options --silent "$root/mnt/sandbox/" \
 title_id=${title_id##* }
 title_id=${title_id%_*}
 if [[ $title_id != CUSA[0-9][0-9][0-9][0-9][0-9] ]]; then
-  echo "Could not retreive Title ID. Is the game started?" >&2
+  echo "Could not retrieve Title ID. Is the game started?" >&2
   clean_exit 1
 fi
 
@@ -1053,7 +1088,7 @@ fi
 if [[ $dump_keystone ]]; then
   cd "$output_dir" || abort
   echo "Dumping $title_id keystone:"
-  mkdir --parents "$title_id-keystone" && cd "$title_id-keystone" || abort
+  mkdir -p "$title_id-keystone" && cd "$title_id-keystone" || abort
 
   dump_file "$root/mnt/sandbox/pfsmnt/$title_id-app0/sce_sys/keystone"
 
@@ -1067,7 +1102,7 @@ if [[ $dump_app ]]; then
 
   cd "$output_dir" || abort
   echo "Dumping $title_id app data ($((download_size / 1000000)) MB):"
-  mkdir --parents "$title_id-app" && cd "$title_id-app" || abort
+  mkdir -p "$title_id-app" && cd "$title_id-app" || abort
 
   if [[ $pfs_extraction_enabled ]]; then
     dump_and_extract_pfs_image \
@@ -1079,8 +1114,19 @@ if [[ $dump_app ]]; then
     disable_download_progress
   fi
 
-  mkdir --parents sce_sys && cd sce_sys || abort
-  dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
+  mkdir -p sce_sys && cd sce_sys || abort
+  if ftp_file_exists "$root/user/app/$title_id/app.pkg"; then
+    dump_and_extract_pkg "$root/user/app/$title_id/app.pkg"
+  elif ftp_file_exists "$root/mnt/ext0/user/app/$title_id/app.pkg"; then
+    dump_and_extract_pkg "$root/mnt/ext0/user/app/$title_id/app.pkg"
+  else
+    abort "Could not find FTP file \"app.pkg\"."
+  fi
+
+  if [[ -f param.sfo ]] && grep -ao REMASTER_TYPE param.sfo &> /dev/null; then
+    warning_message \
+      "App is of type \"remaster\" - editing the param.sfo might be necessary."
+  fi
 
   if [[ -f npbind.dat ]]; then
     echo "Replacing npbind.dat and nptitle.dat ..."
@@ -1102,7 +1148,7 @@ if [[ $dump_patch ]]; then
 
     cd "$output_dir" || abort
     echo "Dumping $title_id patch data ($((download_size / 1000000)) MB):"
-    mkdir --parents "$title_id-patch" && cd "$title_id-patch" || abort
+    mkdir -p "$title_id-patch" && cd "$title_id-patch" || abort
 
     if [[ $pfs_extraction_enabled ]]; then
       dump_and_extract_pfs_image \
@@ -1114,8 +1160,14 @@ if [[ $dump_patch ]]; then
       disable_download_progress
     fi
 
-    mkdir --parents sce_sys && cd sce_sys || abort
-    dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
+    mkdir -p sce_sys && cd sce_sys || abort
+    if ftp_file_exists "$root/user/app/$title_id/patch.pkg"; then
+      dump_and_extract_pkg "$root/user/app/$title_id/patch.pkg"
+    elif ftp_file_exists "$root/mnt/ext0/user/app/$title_id/patch.pkg"; then
+      dump_and_extract_pkg "$root/mnt/ext0/user/app/$title_id/patch.pkg"
+    else
+      abort "Could not find FTP file \"patch.pkg\"."
+    fi
 
     if [[ -f npbind.dat ]]; then
       echo "Replacing npbind.dat and nptitle.dat ..."
@@ -1143,7 +1195,7 @@ if [[ $dump_dlc ]]; then
   if [[ $dlc_dirs ]]; then
     cd "$output_dir" || abort
     echo "Dumping $title_id DLC data:"
-    mkdir --parents "$title_id-dlc" && cd "$title_id-dlc" || abort
+    mkdir -p "$title_id-dlc" && cd "$title_id-dlc" || abort
     for dir in $dlc_dirs; do
       mkdir "$dir" && cd "$dir" || abort
       dump_dir "$root/mnt/sandbox/pfsmnt/$dir/"
