@@ -1161,10 +1161,10 @@ if [[ $dump_patch ]]; then
     fi
 
     mkdir -p sce_sys && cd sce_sys || abort
-    if ftp_file_exists "$root/user/app/$title_id/patch.pkg"; then
-      dump_and_extract_pkg "$root/user/app/$title_id/patch.pkg"
-    elif ftp_file_exists "$root/mnt/ext0/user/app/$title_id/patch.pkg"; then
-      dump_and_extract_pkg "$root/mnt/ext0/user/app/$title_id/patch.pkg"
+    if ftp_file_exists "$root/user/patch/$title_id/patch.pkg"; then
+      dump_and_extract_pkg "$root/user/patch/$title_id/patch.pkg"
+    elif ftp_file_exists "$root/mnt/ext0/user/patch/$title_id/patch.pkg"; then
+      dump_and_extract_pkg "$root/mnt/ext0/user/patch/$title_id/patch.pkg"
     else
       abort "Could not find FTP file \"patch.pkg\"."
     fi
