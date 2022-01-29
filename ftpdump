@@ -1467,7 +1467,7 @@ elif [[ ! -f "$sfo_path" ]]; then
 fi
 if [[ ! $sfo_path ]]; then
   [[ $debug ]] && debug_message "Could not find sfo."
-  if [[ $list_sort_order -eq 5 ]]; then
+  if [[ $list_sort_order -eq 6 ]]; then
     list_sort_order=1
     [[ $debug ]] && debug_message "Set list sort order to 1 because of missing sfo."
   fi
