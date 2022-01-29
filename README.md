@@ -111,8 +111,9 @@ Column "DB" ("Database"):
 Column "PKG":
 - "OK" means the PKG file exists
 - "-" means there is no PKG file and the directory is empty
-- "x/y" means x out of y DLC PKG files that had been installed at some point are still there  
-*The "Title" column is only displayed if the program "sfo" is available (see next topic).
+- "x/y" means x out of y DLC PKG files that had been installed at some point are still there
+
+*The "Title" column is only displayed if the program "sfo" is available.
 
 Use option --listN instead of --list to change the list's default sort order. For example, to sort by title (6th column): "--list6".  
 Note: The script employs simultaneous FTP connections to create the list as fast as possible. FTP servers that don't support simultaneous connections, e.g. GoldHEN 2.0's FTP server, can only check 1 file at a time and thus will slow down the process a lot.
