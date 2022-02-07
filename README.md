@@ -12,7 +12,7 @@ For maximum speed, a gigabit cable connection is recommended (but Wi-Fi works, t
 
 Example command:
 
-    $ ./ftpdump 192.168.178.100
+    $ ./ftpdump 192.168.1.100
 
 General usage:
 
@@ -165,11 +165,11 @@ In the same folder that has the file "ftpdump", create a batch file named "ftpdu
 
 Then, the script can be run by opening a Windows command prompt (cmd.exe) and typing (replace the IP address with your PS4's IP and FTP port):
 
-    ftpdump 192.168.1.1:1337
+    ftpdump 192.168.1.100:1337
 
 Other options can be passed, too, for example:
 
-    ftpdump 192.168.178.100:1337 -p --dlc
+    ftpdump 192.168.1.100:1337 -p --dlc
 
 To save IP and port permanently, open and edit the file "ftpdump" with a text editor that supports Unix format. On current Windows 10/11 builds, Notepad should do.
 
@@ -180,11 +180,12 @@ If Wget is not installed by default, you can install it by opening a Windows com
 If you want to create a shortcut that runs predefined ftpdump commands on double-click, save a copy of ftpdump.bat under a different .bat file name, replace "%\*" with desired options and add the line "pause" at the end of the file.
 
 ### For macOS users:
-You need to install Wget, you might need to update your Bash version, and having GNU dd (part of coreutils) instead of the default macOS dd could improve the overall dumping speed slightly:
+You need to install Wget and update your Bash version, and having GNU dd (part of coreutils) instead of the default macOS dd could improve the overall dumping speed slightly:
 
     brew install bash coreutils wget
 
-GNU dd will majorly improve performance when extracting PFS images.
+GNU dd will majorly improve performance when extracting PFS images.  
+After installing Homebrew's Bash, make sure to adjust the shebang (the script's first line) to point to the correct path.
 
 ### Known limitations
 
@@ -192,5 +193,6 @@ Current PS4 FTP servers, which are based on the same code, have some limitations
 - Downloading different SELF files in parallel can corrupt SELF decryption, effectively making downloading in parallel a no-go.
 - Cancelling the download of huge files (which the script employs to speed things up) won't stop the server from sending the rest of the file. The result is reduced network throughput (plus in extreme cases a PS4 performance decrease). Currently this can be worked around if the FTP server supports the custom command KILL (which the script will then call).
 - When decryption is enabled, servers still report the encrypted file size, which can corrupt resuming.
+- Files larger than 4 GiB may not resume properly.
 
 The updated FTP payload at https://github.com/hippie68/ps4-ftp fixes those issues. Using it is strongly recommended to avoid the network throughput bug and to use option --resume without issues.
