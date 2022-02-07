@@ -1069,7 +1069,7 @@ replace_encrypted_trophies() {
   # Check previously downloaded npbind.dat for trophy directory names
   while read -r dir; do
     trophy_dirs+=($dir)
-  done < <(cat npbind.dat | strings | grep -E NPWR\[0-9\]{5}_\[0-9\]{2})
+  done < <(grep -E NPWR\[0-9\]{5}_\[0-9\]{2} < <(strings < npbind.dat))
   
   [[ $debug ]] && debug_message \
     "Trophy directories found in npbind.dat: ${trophy_dirs[*]}"
