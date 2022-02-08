@@ -572,6 +572,7 @@ dump_app_data() {
 
   if [[ -f npbind.dat ]]; then
     echo "Replacing npbind.dat and nptitle.dat ..."
+    rm npbind.dat nptitle.dat
     dump_file "$root/system_data/priv/appmeta/$1/npbind.dat"
     dump_file "$root/system_data/priv/appmeta/$1/nptitle.dat"
     replace_encrypted_trophies
@@ -612,6 +613,7 @@ dump_patch_data() {
 
     if [[ -f npbind.dat ]]; then
       echo "Replacing npbind.dat and nptitle.dat ..."
+      rm npbind.dat nptitle.dat
       dump_file "$root/system_data/priv/appmeta/$1/npbind.dat"
       dump_file "$root/system_data/priv/appmeta/$1/nptitle.dat"
       replace_encrypted_trophies
