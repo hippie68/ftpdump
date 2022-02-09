@@ -62,15 +62,15 @@ Options:
   -k, --keystone       Dump original keystone.
       --keep-trying    Infinitely keep trying to connect.
       --list[N]        Print a sorted list of installed PKGs and quit. Can be
-                       combined with options --app, --patch, --dlc.
-                       Optional number N specifies the sort order: 1: Title ID,
-                       2: Type, 3: Database status, 4: PKG status, 5: Title.
+                       combined with options --app, --patch, --dlc. The optional
+                       number N specifies the sort order: 1: Title ID, 2: Type,
+                       3: Location, 4: Database status, 5: PKG status, 6: Title.
       --no-decrypt     Do not use server-side SELF decryption.
   -o, --output-dir DIRECTORY
                        Set the root output directory for dumps and extractions.
   -p, --patch          Dump patch data.
   -r, --resume         Resume a previously interrupted download. When used with
-                       legacy FTP servers, this can corrupt decrypted files.
+                       unpatched FTP servers, this can corrupt decrypted files.
   -s, --sflash         Dump sflash0 file and quit.
       --shutdown       Send the custom FTP command "SHUTDOWN" and quit. If the
                        FTP server understands the command, it will stop running.
@@ -280,7 +280,7 @@ disable_download_progress() {
 # $2: size unit: "kb" or "mb" (empty for bytes)
 set_download_size() {
   download_size=$(curl $curl_options --silent --head "$1" \
-    | grep "Content-Length")
+    | grep 'Content-Length')
   if [[ $? -eq 0 ]]; then
     download_size=${download_size#* }
     download_size=${download_size%[^0-9]*}
@@ -529,6 +529,57 @@ dump_keystone() {
   check_keystone keystone
 }
 
+# Checks for and replaces encrypted trophy files from within ./sce_sys/.
+replace_encrypted_trophies() {
+  local i=0
+  local magic_number
+  local trophy_dirs
+  local trophy_file
+
+  # Check previously downloaded npbind.dat for trophy directory names
+  readarray -t trophy_dirs < <(grep -aoE 'NPWR[0-9]{5}_[0-9]{2}' npbind.dat)
+  [[ $debug ]] && debug_message \
+    "Trophy directories found in npbind.dat: ${trophy_dirs[*]}"
+
+  for trophy_file in trophy/trophy[0-9][0-9].trp; do
+    # Quit if no trophy files exist
+    if [[ ! -f $trophy_file ]]; then
+      return
+    fi
+
+    echo "Checking trophy files for encryption ..."
+
+    read magic_number < <(dd if="$trophy_file" bs=1 count=3 2> /dev/null)
+    if [[ $magic_number == $(printf "\xdc\xa2\x4d") ]]; then
+      echo "File \"${trophy_file##*/}\" is not encrypted."
+    else
+      echo "File \"${trophy_file##*/}\" is encrypted."
+      if [[ ${trophy_dirs[$i]} ]]; then
+        echo "Replacing \"${trophy_file##*/}\" with unencrypted version."
+        [[ $debug ]] && debug_message \
+          "Copying from trophy directory \"${trophy_dirs[$i]}\""
+        dump_file "$root/user/trophy/conf/${trophy_dirs[$i]}/TROPHY.TRP" \
+          > /dev/null
+        mv TROPHY.TRP "$trophy_file" || abort
+      else
+        critical_message \
+          "Could not find unencrypted version of \"${trophy_file##*/}\"." >&2
+      fi
+    fi
+
+    ((i++))
+  done
+}
+
+# Replaces npbind.dat and nptitle.dat for Title ID $1 from within ./sce_sys/.
+replace_np_files() {
+  echo "Replacing npbind.dat and nptitle.dat ..."
+  rm -f npbind.dat nptitle.dat || abort \
+    "Could not delete npbind.dat and/or nptitle.dat."
+  dump_file "$root/system_data/priv/appmeta/$1/npbind.dat"
+  dump_file "$root/system_data/priv/appmeta/$1/nptitle.dat"
+}
+
 # Dumps app data that belongs to Title ID $1.
 dump_app_data() {
   set_download_size "$root/mnt/sandbox/pfsmnt/$1-app0-nest/pfs_image.dat"
@@ -571,9 +622,7 @@ dump_app_data() {
   fi
 
   if [[ -f npbind.dat ]]; then
-    echo "Replacing npbind.dat and nptitle.dat ..."
-    dump_file "$root/system_data/priv/appmeta/$1/npbind.dat"
-    dump_file "$root/system_data/priv/appmeta/$1/nptitle.dat"
+    replace_np_files "$1"
     replace_encrypted_trophies
   fi
 }
@@ -611,9 +660,7 @@ dump_patch_data() {
     fi
 
     if [[ -f npbind.dat ]]; then
-      echo "Replacing npbind.dat and nptitle.dat ..."
-      dump_file "$root/system_data/priv/appmeta/$1/npbind.dat"
-      dump_file "$root/system_data/priv/appmeta/$1/nptitle.dat"
+      replace_np_files "$1"
       replace_encrypted_trophies
     fi
   else
@@ -1059,48 +1106,6 @@ dump_and_extract_pkg() {
     "Could not remove temporary file \"$pkg_filename\"."
 }
 
-# Checks for and replaces encrypted trophy files from within ./sce_sys/.
-replace_encrypted_trophies() {
-  local i=0
-  local magic_number
-  local trophy_dirs
-  local trophy_file
-
-  # Check previously downloaded npbind.dat for trophy directory names
-  readarray -t trophy_dirs < <(grep -aoE NPWR[0-9]{5}_[0-9]{2} npbind.dat)
-  [[ $debug ]] && debug_message \
-    "Trophy directories found in npbind.dat: ${trophy_dirs[*]}"
-
-  for trophy_file in trophy/trophy[0-9][0-9].trp; do
-    # Quit if no trophy files exist
-    if [[ ! -f $trophy_file ]]; then
-      return
-    fi
-
-    echo "Checking trophy files for encryption ..."
-
-    read magic_number < <(dd if="$trophy_file" bs=1 count=3 2> /dev/null)
-    if [[ $magic_number == $(printf "\xdc\xa2\x4d") ]]; then
-      echo "File \"${trophy_file##*/}\" is not encrypted."
-    else
-      echo "File \"${trophy_file##*/}\" is encrypted."
-      if [[ ${trophy_dirs[$i]} ]]; then
-        echo "Replacing \"${trophy_file##*/}\" with unencrypted version."
-        [[ $debug ]] && debug_message \
-          "Copying from trophy directory \"${trophy_dirs[$i]}\""
-        dump_file "$root/user/trophy/conf/${trophy_dirs[$i]}/TROPHY.TRP" \
-          > /dev/null
-        mv TROPHY.TRP "$trophy_file" || abort
-      else
-        critical_message \
-          "Could not find unencrypted version of \"${trophy_file##*/}\"." >&2
-      fi
-    fi
-
-    ((i++))
-  done
-}
-
 # PFS extraction: --------------------------------------------------------------
 
 readonly INODE_SIZE=168
@@ -1173,13 +1178,13 @@ extract_pfs_dir() {
 
       if [[ $debug_pfs ]]; then
         debug_message "Reading inode $2, block $cur_block, directory entry $i"
-        debug_message "  -> Dirent inode index: $dirent_inode_index"
-        debug_message "  -> Dirent type: $dirent_type"
-        debug_message "  -> Dirent size: $dirent_size"
+        debug_message "  -> Directory entry inode index: $dirent_inode_index"
+        debug_message "  -> Directory entry type: $dirent_type"
+        debug_message "  -> Directory entry size: $dirent_size"
         local dirent_filename_len
         read_int_le dirent_filename_len "$1" $((offset + 8)) 4
-        debug_message "  -> Dirent file name length: $dirent_filename_len"
-        debug_message "  -> Dirent file name: $dirent_filename"
+        debug_message "  -> Directory entry file name length: $dirent_filename_len"
+        debug_message "  -> Directory entry file name: $dirent_filename"
       fi
 
       # Extract file or create directory
@@ -1614,7 +1619,7 @@ case $? in
 esac
 
 # Check for GoldHEN FTP server
-if echo "$reply" | grep "GoldHEN .*v2" > /dev/null; then
+if echo "$reply" | grep 'GoldHEN .*v2' > /dev/null; then
   [[ $debug ]] && debug_message "GoldHEN 2.x FTP server detected."
   goldhen_2=1
 fi
@@ -1691,7 +1696,7 @@ fi
 
 # For other dumps, get the currently running app's Title ID
 title_id=$(curl $curl_options --silent "$root/mnt/sandbox/pfsmnt/" \
-  | grep -Eo -m1 "[A-Z]{4}[0-9]{5}-app0")
+  | grep -Eo -m1 '[A-Z]{4}[0-9]{5}-app0')
 title_id=${title_id%-app0}
 if [[ ! $title_id =~ ^[A-Z]{4}[0-9]{5}$ ]]; then
   echo "Could not retrieve Title ID. Is the game started?" >&2
