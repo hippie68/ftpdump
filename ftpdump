@@ -555,7 +555,7 @@ replace_encrypted_trophies() {
     else
       echo "File \"${trophy_file##*/}\" is encrypted."
       if [[ ${trophy_dirs[$i]} ]]; then
-        echo "Replacing \"${trophy_file##*/}\" with unencrypted version."
+        echo "Replacing \"${trophy_file##*/}\" with unencrypted version ..."
         [[ $debug ]] && debug_message \
           "Copying from trophy directory \"${trophy_dirs[$i]}\""
         dump_file "$root/user/trophy/conf/${trophy_dirs[$i]}/TROPHY.TRP" \
@@ -1454,30 +1454,37 @@ else
 fi
 
 # Check sfo path
-[[ $sfo_path ]] || sfo_path=${0%/*} # ftpdump's path
-[[ $sfo_path != / ]] && sfo_path=${sfo_path%/}
+if [[ $sfo_path ]]; then
+  sfo_path_user_defined=1
+  sfo_path=$(realpath "$sfo_path")
+else
+  sfo_path=$(pwd)
+  sfo_path="${sfo_path%/}/" # ftpdump's path
+fi
 if [[ -d "$sfo_path" ]]; then
+  sfo_path=${sfo_path%/}
   if [[ -f "$sfo_path/sfo" ]]; then sfo_path+=/sfo
   elif [[ -f "$sfo_path/sfo_32" ]]; then sfo_path+=/sfo_32
   elif [[ -f "$sfo_path/sfo.exe" ]]; then sfo_path+=/sfo.exe
   elif [[ -f "$sfo_path/sfo_32.exe" ]]; then sfo_path+=/sfo_32.exe
   else
-    [[ $sfo_path != ${0%/*} ]] && warning_message \
-      "Could not find sfo in directory \"$sfo_path\". Please adjust the variable \"sfo_path\" or make sure it is empty. Not using sfo."
+    [[ $sfo_path_user_defined ]] && warning_message \
+      "Could not find sfo in directory \"$sfo_path/\". Please adjust the variable \"sfo_path\" or make sure it is empty. Not using sfo."
     unset sfo_path
   fi
 elif [[ ! -f "$sfo_path" ]]; then
-  warning_message "Variable \"sfo_path\" points to a file, but the file does not exist. Not using sfo."
+  [[ $sfo_path_user_defined ]] && warning_message \
+    "Variable \"sfo_path\" points to a file, but the file does not exist. Not using sfo."
   unset sfo_path
 fi
 if [[ ! $sfo_path ]]; then
-  [[ $debug ]] && debug_message "Could not find sfo."
+  [[ $debug ]] && debug_message "Could not find optional program \"sfo\"."
   if [[ $list_sort_order -eq 6 ]]; then
     list_sort_order=1
     [[ $debug ]] && debug_message "Set list sort order to 1 because of missing sfo."
   fi
 else
-  [[ $sfo_path && $debug ]] && debug_message "Found sfo in \"$sfo_path\"."
+  [[ $sfo_path && $debug ]] && debug_message "Found optional program \"sfo\" in \"$sfo_path\"."
 fi
 
 # Stores other temp files; from here on out, only exit with function clean_exit
