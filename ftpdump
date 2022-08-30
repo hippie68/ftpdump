@@ -496,10 +496,10 @@ dump_dir() {
     while read -r line; do
       if [[ $line == *" ->"* ]]; then
         file_name=${line%\"*}
-        file_size=${file_name%]*}
-        file_size=${file_size##*[}
-        file_name=${file_name##*\"}
+        file_name=${file_name#*] -> \"}
         file_name=${file_name%.listing} # Wget's temporary files
+        file_size=${line%] -> \"*}
+        file_size=${file_size##*[}
         if [[ $file_name ]]; then
           echo -e "\e[2K\r$file_name"
           # Update download progress
