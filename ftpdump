@@ -46,10 +46,10 @@ Options:
   -d, --dlc            Dump DLC data.
       --debug          Print debug information.
       --debug-pfs      Print debug information when extracting a PFS image file.
-      --dump PATH      Dump specified FTP file or directory and quit.
+      --download PATH  Download specified FTP file or directory and quit.
                        Directories must end with a slash: "PATH/".
-      --dump TITLE_ID [TITLE_ID ...]
-                       Dump PKG files that have the specified Title ID(s) and
+      --download TITLE_ID [TITLE_ID ...]
+                       Download PKG files having the specified Title ID(s) and
                        quit. Can be combined with options --app, --patch, --dlc.
       --extract-pfs PFS_IMAGE_FILE
                        Extract a local PFS image file and quit.
@@ -74,8 +74,8 @@ Options:
   -s, --sflash         Dump sflash0 file and quit.
       --shutdown       Send the custom FTP command "SHUTDOWN" and quit. If the
                        FTP server understands the command, it will stop running.
-      --use-pfs        Instead of downloading files separately, download and
-                       extract the PFS image file.
+      --use-pfs        While dumping, instead of downloading files separately,
+                       download and extract the PFS image file.
   -v, --verbose        Print the client/server dialog when downloading files.
 EOF
 }
@@ -331,7 +331,7 @@ set_decryption() {
         return 1
       fi
     fi
-  elif [[ $goldhen_2 ]]; then
+  elif [[ $goldhen_2_old ]]; then
     if [[ $1 == 0 ]]; then
       warning_message "This FTP server always decrypts and is not able to disable SELF decryption."
       return 1
@@ -868,7 +868,7 @@ pkg_list_append() {
     local temp_param_file=$(create_temp_file)
     curl --silent "$root/system_data/priv/appmeta/$title_id/param.sfo" \
       > "$temp_param_file"
-    if [[ $? == 0 ]]; then
+    if [[ $? -eq 0 ]]; then
       line+="$("$sfo_path" -q title "$temp_param_file")"
       [[ $? -ne 0 ]] && abort \
         "sfo reported an error while reading the temporary file \"$temp_param_file\"."
@@ -916,8 +916,9 @@ populate_pkg_list() {
       wait -n
     fi
 
-    # Don't use jobs if the FTP server is GoldHEN 2 (it would crash quickly)
-    if [[ $goldhen_2 ]]; then
+    # Don't use jobs if the FTP server is from an older GoldHEN version
+    # (it could crash quickly)
+    if [[ $goldhen_2_old ]]; then
       pkg_list_append "$path" # Seems even without jobs it likes to crash soon?
     else
       pkg_list_append "$path" &
@@ -946,7 +947,7 @@ list_pkgs() {
   else
     printf "\e[2K\rTitle ID    Type    Location   DB   PKG\n"
   fi
-  cat "$pkg_list" | sort --ignore-case --key=$1
+  cat "$pkg_list" | sort --ignore-case --ignore-leading-blanks --key=$1
   rm "$temp_database_file"
   rm "$pkg_list"
 }
@@ -1301,8 +1302,9 @@ replace_encrypted_files() {
 
 # Main script: #################################################################
 
+export LC_ALL=C
+
 # Global variables
-LC_ALL=C
 declare download_size
 declare output_dir
 main_pid=$BASHPID
@@ -1319,7 +1321,7 @@ for ((i = 0; i < argc; i++)); do
       --appdb) dump_appdb=1 ;;
       --beep) force_beep=1 ;;
       -d|--ac|--dlc|--dlc-only) option_dlc=1 ;;
-      --dump)
+      --download|--dump)
         if [[ $((++i)) -lt argc ]]; then
           if [[ ${argv[i]^^} =~ ^[A-Z]{4}[0-9]{5}$ ]]; then
             dump_title_id+=(${argv[i]^^})
@@ -1453,13 +1455,27 @@ else
   warning_message "Could not check Bash version. Please report this if you encounter any script errors."
 fi
 
+# Check for gdd and ggrep on macOS
+if [[ $(uname) == Darwin ]]; then
+  if gdd --version &> /dev/null; then
+    [[ $debug ]] && debug_message "gdd detected - using gdd instead of dd."
+    alias dd=gdd
+  fi
+  if ggrep --version &> /dev/null; then
+    [[ $debug ]] && debug_message "ggrep detected - using ggrep instead of grep."
+    alias grep=ggrep
+  elif [[ $(grep --version 2> /dev/null) != *'GNU grep'* ]]; then
+    warning_message "On macOS, GNU grep (ggrep) may be required to automatically replace encrypted trophies (\"\$ brew install grep\")."
+  fi
+  shopt -s expand_aliases
+fi
+
 # Check sfo path
 if [[ $sfo_path ]]; then
   sfo_path_user_defined=1
   sfo_path=$(realpath "$sfo_path")
 else
-  sfo_path=$(pwd)
-  sfo_path="${sfo_path%/}/" # ftpdump's path
+  sfo_path="${BASH_SOURCE%/*}/" # ftpdump's directory
 fi
 if [[ -d "$sfo_path" ]]; then
   sfo_path=${sfo_path%/}
@@ -1479,7 +1495,7 @@ elif [[ ! -f "$sfo_path" ]]; then
 fi
 if [[ ! $sfo_path ]]; then
   [[ $debug ]] && debug_message "Could not find optional program \"sfo\"."
-  if [[ $list_sort_order -eq 6 ]]; then
+  if [[ $list_sort_order -ge 6 ]]; then
     list_sort_order=1
     [[ $debug ]] && debug_message "Set list sort order to 1 because of missing sfo."
   fi
@@ -1505,19 +1521,12 @@ if [[ $option_fix_remaster ]]; then
 fi
 
 # Set dd options
-dd --version 2> /dev/null | grep GNU > /dev/null
-if [[ $? == 0 ]]; then
+if dd --version 2> /dev/null | grep GNU > /dev/null; then
   [[ $debug ]] && debug_message "GNU dd detected - using GNU-specific dd options."
   dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
 else
-  gdd --version 2> /dev/null | grep GNU > /dev/null
-  if [[ $? == 0 ]]; then
-    [[ $debug ]] && debug_message "Homebrew GNU dd detected - using GNU-specific dd options."
-    dd_options="iflag=skip_bytes,count_bytes" # For GNU dd; much faster
-  else
-    [[ $debug ]] && debug_message "Non-GNU dd detected - using regular dd options (slow!)."
-    dd_options="ibs=1"
-  fi
+  [[ $debug ]] && debug_message "Non-GNU dd detected - using regular dd options (slow!)."
+  dd_options="ibs=1"
 fi
 
 # Set output directory
@@ -1626,11 +1635,14 @@ case $? in
 esac
 
 # Check for GoldHEN FTP server
-if echo "$reply" | grep 'GoldHEN .*v2' > /dev/null; then
-  [[ $debug ]] && debug_message "GoldHEN 2.x FTP server detected."
-  goldhen_2=1
+if [[ $reply == *GoldHEN*v2* ]]; then
+  if [[ $reply == *v2.0* ]]; then
+    [[ $debug ]] && debug_message "GoldHEN 2.x FTP server v2.0 detected."
+    goldhen_2_old=1 # Only 1 connection at a time, no KILL commmand
+  else
+    [[ $debug ]] && debug_message "GoldHEN 2.x FTP server v2.1+ detected."
+  fi
 fi
-unset reply
 
 # Print PKG list and quit (option --list)
 if [[ $option_list ]]; then
@@ -1650,14 +1662,20 @@ if [[ $shutdown ]]; then
 fi
 
 # Check for KILL command support
-if curl --head --quote KILL "$root" 2> /dev/null; then
-  [[ $debug ]] && debug_message \
-    "Server supports the KILL command, which is great."
-  kill_switch=1;
-elif [[ ! $goldhen_2 ]]; then
-  warning_message \
-    "Server does not support the KILL command - subsequent dumps may become slower each time."
+if [[ ! $goldhen_2_old && $reply != *hippie68* ]]; then
+  reply=$(curl --silent --verbose --head --quote KILL "$root" 2>&1)
+  if [[ $? -eq 0 ]]; then
+    if [[ $reply == *'< 200'* ]]; then
+      [[ $debug ]] && debug_message \
+        "Server supports the KILL command, which is great."
+      kill_switch=1;
+    elif [[ $reply != *'< 202'* ]]; then
+      warning_message \
+        "Server does not support the KILL command - subsequent dumps may become slower each time."
+    fi
+  fi
 fi
+unset reply
 
 # Create output directory
 mkdir -p "$output_dir" && cd "$output_dir" || abort
