@@ -704,7 +704,7 @@ dump_pkgs() {
     if [[ $option_app ]]; then
       for ftp_file in "$root/user/app/$title_id/app.pkg" \
         "$root/mnt/ext0/user/app/$title_id/app.pkg"; do
-        if ftp_file_exists "$ftp_file"; then
+        if ftp_file_exists "$rftp_file"; then
           cd "$output_dir" || abort
           set_download_size "$ftp_file" mb
           echo "Downloading $title_id app PKG ($download_size MB) ..."
@@ -798,6 +798,11 @@ pkg_list_append() {
   local line
   local title_id
   local type
+  local external
+
+  if [[ $1 == */mnt/ext0/* ]]; then
+    external=1
+  fi
 
   # Add Title ID to line
   title_id=${1%/}
@@ -812,7 +817,7 @@ pkg_list_append() {
   esac
 
   # Add location to line
-  if [[ $1 == */mnt/ext0/* ]]; then
+  if [[ $external ]]; then
     line+='external   '
   else
     line+='internal   '
@@ -869,9 +874,38 @@ pkg_list_append() {
     curl --silent "$root/system_data/priv/appmeta/$title_id/param.sfo" \
       > "$temp_param_file"
     if [[ $? -eq 0 ]]; then
+      # Add title
       line+="$("$sfo_path" -q title "$temp_param_file")"
-      [[ $? -ne 0 ]] && abort \
-        "sfo reported an error while reading the temporary file \"$temp_param_file\"."
+      [[ $? -ne 0 ]] && abort
+
+      # Add version
+      local version
+      if [[ $type == app ]]; then
+        local patch_file="/user/patch/$title_id/patch.pkg"
+        [[ $external ]] && patch_file="/mnt/ext0$patch_file"
+        if ftp_file_exists "$root$patch_file"; then
+          version='01.00' # Guessed, for speed reasons; may be wrong if a
+                          # regular patch was installed over a self-merged PKG
+        else
+          local changeinfo_file="/user/appmeta/$title_id/changeinfo/changeinfo.xml"
+          [[ $external ]] && changeinfo_file="/mnt/ext0$changeinfo_file"
+          if ftp_file_exists "$root$changeinfo_file"; then
+            changeinfo_file=$(curl --silent "$root$changeinfo_file")
+            [[ $? -ne 0 ]] && abort
+            version=$(printf '%s' "$changeinfo_file" \
+              | grep -Po '(?<=<changes app_ver=")[0-9]{2}\.[0-9]{2}' \
+              | sort -r | head -n 1)
+          else
+            version="$("$sfo_path" -q app_ver "$temp_param_file")"
+            [[ $? -ne 0 ]] && abort
+          fi
+        fi
+      elif [[ $type == patch ]]; then
+        version="$("$sfo_path" -q app_ver "$temp_param_file")"
+        [[ $? -ne 0 ]] && abort
+      fi
+      [[ $version ]] && line+=" [v${version#0}]"
+
       rm "$temp_param_file" || abort \
         "Could not delete the temporary file \"$temp_param_file\"."
     else
