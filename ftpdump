@@ -704,7 +704,7 @@ dump_pkgs() {
     if [[ $option_app ]]; then
       for ftp_file in "$root/user/app/$title_id/app.pkg" \
         "$root/mnt/ext0/user/app/$title_id/app.pkg"; do
-        if ftp_file_exists "$rftp_file"; then
+        if ftp_file_exists "$ftp_file"; then
           cd "$output_dir" || abort
           set_download_size "$ftp_file" mb
           echo "Downloading $title_id app PKG ($download_size MB) ..."
