@@ -108,14 +108,14 @@ By default, the script will only beep when dumping app/patch/DLC data, unless op
 
 To list information about installed PKGs, use option --list. The output would look like this:
 
-    Title ID    Type    Location   DB   PKG  Title\*
-    CUSA07010   App     internal   OK   OK   Sonic Mania
+    Title ID    Type    Location   DB   PKG  Title*
+    CUSA07010   App     internal   OK   OK   Sonic Mania [v1.00]
     CUSA07010   DLC     internal   OK   1/1  Sonic Mania
-    CUSA07010   Patch   internal   OK   OK   Sonic Mania
+    CUSA07010   Patch   internal   OK   OK   Sonic Mania [v1.04]
     CUSA11993   DLC     internal   OK   -    [App not installed]
-    FLTZ00003   App     internal   OK   OK   Remote PKG installer
-    LAPY20001   App     internal   OK   OK   PS4-Xplorer
-    PSNE00001   App     internal   OK   OK   pSNES - Portable Snes9x
+    FLTZ00003   App     internal   OK   OK   Remote PKG installer [v1.00]
+    LAPY20001   App     internal   OK   OK   PS4-Xplorer [v1.00]
+    PSNE00001   App     internal   OK   OK   pSNES - Portable Snes9x [v5.2]
 
 Column "DB" ("Database"):
 - "OK" means the PS4 database knows about the Title ID
