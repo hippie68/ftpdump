@@ -576,8 +576,12 @@ replace_np_files() {
   echo "Replacing npbind.dat and nptitle.dat ..."
   rm -f npbind.dat nptitle.dat || abort \
     "Could not delete npbind.dat and/or nptitle.dat."
-  dump_file "$root/system_data/priv/appmeta/$1/npbind.dat"
-  dump_file "$root/system_data/priv/appmeta/$1/nptitle.dat"
+  if ftp_file_exists "$root/system_data/priv/appmeta/$1/npbind.dat"; then
+    dump_file "$root/system_data/priv/appmeta/$1/npbind.dat"
+  fi
+  if ftp_file_exists "$root/system_data/priv/appmeta/$1/nptitle.dat"; then
+    dump_file "$root/system_data/priv/appmeta/$1/nptitle.dat"
+  fi
 }
 
 # Dumps app data that belongs to Title ID $1.
@@ -621,8 +625,8 @@ dump_app_data() {
     fi
   fi
 
+  replace_np_files "$1"
   if [[ -f npbind.dat ]]; then
-    replace_np_files "$1"
     replace_encrypted_trophies
   fi
 }
@@ -659,8 +663,8 @@ dump_patch_data() {
       abort "Could not find FTP file \"patch.pkg\"."
     fi
 
+    replace_np_files "$1"
     if [[ -f npbind.dat ]]; then
-      replace_np_files "$1"
       replace_encrypted_trophies
     fi
   else
