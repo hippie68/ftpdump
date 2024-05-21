@@ -38,6 +38,7 @@ For maximum speed, a gigabit cable connection is recommended (but Wi-Fi works, t
 
     Options:
       -a, --app            Dump app data.
+          --active         Use an active FTP connection instead of a passive one.
           --appdb          Dump app.db file and quit.
           --beep           Beep when done.
       -d, --dlc            Dump DLC data.
@@ -46,7 +47,7 @@ For maximum speed, a gigabit cable connection is recommended (but Wi-Fi works, t
           --download PATH  Download specified FTP file or directory and quit.
                            Directories must end with a slash: "PATH/".
           --download TITLE_ID [TITLE_ID ...]
-                           Download PKG files that have the specified Title ID(s) and
+                           Download PKG files having the specified Title ID(s) and
                            quit. Can be combined with options --app, --patch, --dlc.
           --extract-pfs PFS_IMAGE_FILE
                            Extract a local PFS image file and quit.
@@ -67,7 +68,7 @@ For maximum speed, a gigabit cable connection is recommended (but Wi-Fi works, t
                            Set the root output directory for dumps and extractions.
       -p, --patch          Dump patch data.
       -r, --resume         Resume a previously interrupted download. When used with
-                           legacy FTP servers, this can corrupt decrypted files.
+                           unpatched FTP servers, this can corrupt decrypted files.
       -s, --sflash         Dump sflash0 file and quit.
           --shutdown       Send the custom FTP command "SHUTDOWN" and quit. If the
                            FTP server understands the command, it will stop running.
