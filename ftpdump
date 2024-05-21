@@ -41,6 +41,7 @@ Exit the script at any time by pressing CTRL-C.
 
 Options:
   -a, --app            Dump app data.
+      --active         Use an active FTP connection instead of a passive one.
       --appdb          Dump app.db file and quit.
       --beep           Beep when done.
   -d, --dlc            Dump DLC data.
@@ -875,7 +876,7 @@ pkg_list_append() {
   # Add PKG's title to line, if program sfo is available
   if [[ $sfo_path ]]; then
     local temp_param_file=$(create_temp_file)
-    curl --silent "$root/system_data/priv/appmeta/$title_id/param.sfo" \
+    curl $curl_options --silent "$root/system_data/priv/appmeta/$title_id/param.sfo" \
       > "$temp_param_file"
     if [[ $? -eq 0 ]]; then
       # Add title
@@ -894,7 +895,7 @@ pkg_list_append() {
           local changeinfo_file="/user/appmeta/$title_id/changeinfo/changeinfo.xml"
           [[ $external ]] && changeinfo_file="/mnt/ext0$changeinfo_file"
           if ftp_file_exists "$root$changeinfo_file"; then
-            changeinfo_file=$(curl --silent "$root$changeinfo_file")
+            changeinfo_file=$(curl $curl_options --silent "$root$changeinfo_file")
             [[ $? -ne 0 ]] && abort
             version=$(printf '%s' "$changeinfo_file" \
               | grep -Po '(?<=<changes app_ver=")[0-9]{2}\.[0-9]{2}' \
@@ -972,7 +973,7 @@ list_pkgs() {
 
   # Save app DB
   local temp_database_file=$(create_temp_file)
-  curl --silent "$root/system_data/priv/mms/app.db" > "$temp_database_file" \
+  curl $curl_options --silent "$root/system_data/priv/mms/app.db" > "$temp_database_file" \
     || curl_error
 
   [[ $option_app ]] && populate_pkg_list "app"
@@ -1356,6 +1357,10 @@ for ((i = 0; i < argc; i++)); do
     case ${argv[i]} in
       --) no_more_args=1 ;;
       -a|-g|--app|--game|--app-only) option_app=1 ;;
+      --active)
+          curl_options+=' --ftp-port -'
+          wget_options+=' --no-passive-ftp'
+          ;;
       --appdb) dump_appdb=1 ;;
       --beep) force_beep=1 ;;
       -d|--ac|--dlc|--dlc-only) option_dlc=1 ;;
