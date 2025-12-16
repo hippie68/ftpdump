@@ -876,8 +876,13 @@ pkg_list_append() {
   # Add PKG's title to line, if program sfo is available
   if [[ $sfo_path ]]; then
     local temp_param_file=$(create_temp_file)
-    curl $curl_options --silent "$root/system_data/priv/appmeta/$title_id/param.sfo" \
-      > "$temp_param_file"
+    local param_sfo_path
+    if [[ $external ]]; then
+      param_sfo="$root/mnt/ext0/$type/$title_id/param.sfo"
+    else
+      param_sfo="$root/system_data/priv/appmeta/$title_id/param.sfo"
+    fi
+    curl $curl_options --silent "$param_sfo" > "$temp_param_file"
     if [[ $? -eq 0 ]]; then
       # Add title
       line+="$("$sfo_path" -q title "$temp_param_file")"
@@ -1502,15 +1507,14 @@ fi
 if [[ $(uname) == Darwin ]]; then
   if gdd --version &> /dev/null; then
     [[ $debug ]] && debug_message "gdd detected - using gdd instead of dd."
-    alias dd=gdd
+    dd() { gdd "$@"; }
   fi
   if ggrep --version &> /dev/null; then
     [[ $debug ]] && debug_message "ggrep detected - using ggrep instead of grep."
-    alias grep=ggrep
+    grep() { ggrep "$@"; }
   elif [[ $(grep --version 2> /dev/null) != *'GNU grep'* ]]; then
     warning_message "On macOS, GNU grep (ggrep) may be required to automatically replace encrypted trophies (\"\$ brew install grep\")."
   fi
-  shopt -s expand_aliases
 fi
 
 # Check sfo path
@@ -1681,7 +1685,7 @@ esac
 if [[ $reply == *GoldHEN*v2* ]]; then
   if [[ $reply == *v2.0* ]]; then
     [[ $debug ]] && debug_message "GoldHEN 2.x FTP server v2.0 detected."
-    goldhen_2_old=1 # Only 1 connection at a time, no KILL commmand
+    goldhen_2_old=1 # Only 1 connection at a time, no KILL command
   else
     [[ $debug ]] && debug_message "GoldHEN 2.x FTP server v2.1+ detected."
   fi
