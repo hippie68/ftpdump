@@ -78,6 +78,7 @@ Options:
       --use-pfs        While dumping, instead of downloading files separately,
                        download and extract the PFS image file.
   -v, --verbose        Print the client/server dialog when downloading files.
+  -m, --minidump       Dump only sce_sys, and executables
 EOF
 }
 
@@ -339,6 +340,8 @@ set_decryption() {
     elif [[ $1 == 1 ]]; then
       [[ $debug ]] && debug_message "This FTP server always decrypts."
     fi
+  elif [[ $is_ps5 ]]; then
+      [[ $debug ]] && debug_message "This FTP server always decrypts."
   else
     warning_message "This FTP server is not able to toggle SELF decryption. Consult your FTP server's documentation to find out whether it decrypts, or use a different FTP server."
     return 1
@@ -349,7 +352,7 @@ set_decryption() {
 
 # Checks if an FTP file or directory exists.
 ftp_file_exists() {
-  if curl --head --silent "$1" &> /dev/null; then
+  if curl --head --silent "$1" | grep "Content-Length" &> /dev/null; then
     return 0
   else
     return 1
@@ -490,10 +493,68 @@ dump_dir() {
   [[ $debug ]] && debug_message \
     "Dumping directory \"$line\", cutting $dir_count directories."
 
+  if [[ $minidump_enabled ]]; then 
+    wget_minidump=--accept-regex\='(/$|(^|/)(eboot[^/]*|[^/]*\.(elf|prx|sprx))$)'
+  fi
+
   # Download directory recursively
-  wget --cut-dirs $dir_count --no-host-directories --no-parent \
-    --no-verbose --recursive $wget_options $wget_resume $wget_verbose \
-    --level inf "$1" 2>&1 | \
+  wget --cut-dirs $dir_count \
+        --no-host-directories --no-parent \
+        --no-verbose --recursive \
+        $wget_options $wget_resume $wget_verbose $wget_minidump \
+        --level inf "$1" 2>&1 | \
+    while read -r line; do
+      if [[ $line == *" ->"* ]]; then
+        file_name=${line%\"*}
+        file_name=${file_name#*] -> \"}
+        file_name=${file_name%.listing} # Wget's temporary files
+        file_size=${line%] -> \"*}
+        file_size=${file_size##*[}
+        if [[ $file_name ]]; then
+          echo -e "\e[2K\r$file_name"
+          # Update download progress
+          if [[ $download_progress_enabled ]]; then
+            ((downloaded_bytes += file_size))
+            print_download_progress
+          fi
+        fi
+      elif [[ $verbose && $line != "" ]]; then
+        echo -e "\e[36m$line\e[0m"
+      fi
+    done
+
+  # Abort script if download has failed
+  local result=${PIPESTATUS[0]}
+  if [[ $result -gt 0 ]]; then
+    wget_error $result
+  fi
+
+  if [[ $minidump_enabled ]]; then 
+    find . -type d -empty -delete
+  fi
+}
+
+dump_full_dir() {
+  local dir_count=0
+  local line
+  local i
+
+  # Count number of directories for Wget
+  line=${1#$root}
+  for ((i = 1; i < ${#line}; i++)); do
+    if [[ ${line:$i:1} == "/" ]]; then
+      ((dir_count++))
+    fi
+  done
+  [[ $debug ]] && debug_message \
+    "Dumping directory \"$line\", cutting $dir_count directories."
+
+  # Download directory recursively
+  wget --cut-dirs $dir_count \
+        --no-host-directories --no-parent \
+        --no-verbose --recursive \
+        $wget_options $wget_resume $wget_verbose \
+        --level inf "$1" 2>&1 | \
     while read -r line; do
       if [[ $line == *" ->"* ]]; then
         file_name=${line%\"*}
@@ -585,13 +646,20 @@ replace_np_files() {
   fi
 }
 
+read_npwr_id() {
+  local file=$1
+  local npwr
+  npwr=$(grep -aoE 'NPWR[0-9]{5}_[0-9]{2}' "$file" | head -n 1)
+  [[ $npwr ]] && echo "$npwr"
+}
+
 # Dumps app data that belongs to Title ID $1.
 dump_app_data() {
   set_download_size "$root/mnt/sandbox/pfsmnt/$1-app0-nest/pfs_image.dat"
 
   cd "$output_dir" || abort
   echo "Dumping $1 app data ($((download_size / 1000000)) MB):"
-  mkdir -p "$1-app" && cd "$1-app" || abort
+  mkdir -p "$1" && cd "$1" || abort
 
   if [[ $pfs_extraction_enabled ]]; then
     dump_and_extract_pfs_image \
@@ -608,6 +676,10 @@ dump_app_data() {
     dump_and_extract_pkg "$root/user/app/$1/app.pkg"
   elif ftp_file_exists "$root/mnt/ext0/user/app/$1/app.pkg"; then
     dump_and_extract_pkg "$root/mnt/ext0/user/app/$1/app.pkg"
+  elif ftp_file_exists "$root/mnt/ext1/user/app/$1/app.pkg"; then
+    dump_and_extract_pkg "$root/mnt/ext1/user/app/$1/app.pkg"
+  elif ftp_file_exists "$root/preinst2/app/$1/app.pkg"; then
+    dump_and_extract_pkg "$root/preinst2/app/$1/app.pkg"
   else
     abort "Could not find FTP file \"app.pkg\"."
   fi
@@ -622,7 +694,73 @@ dump_app_data() {
       fi
     else
       warning_message \
-        "App is of type \"remaster\" - editing the file \"$output_dir/$1-app/sce_sys/param.sfo\" may be necessary (e.g. by using the experimental option --fix-remaster)."
+        "App is of type \"remaster\" - editing the file \"$output_dir/$1/sce_sys/param.sfo\" may be necessary (e.g. by using the experimental option --fix-remaster)."
+    fi
+  fi
+
+  local src_user_meta="$root/user/appmeta/$1"
+
+  if ftp_file_exists "$src_user_meta"; then
+    echo "Copying user appmeta: $src_user_meta"
+    dump_full_dir "$src_user_meta/"
+  else
+    warning_message "User appmeta not found: $src_user_meta"
+  fi
+
+  if [[ $is_ps5_game ]]; then
+    local src_sys_meta="$root/system_data/priv/appmeta/$1"
+
+    if ftp_file_exists "$src_sys_meta"; then
+      echo "Copying system appmeta: $src_sys_meta"
+      dump_full_dir "$src_sys_meta/"
+    else
+      warning_message "System appmeta not found: $src_sys_meta"
+    fi
+
+    # 3. Trophy & UDS via npbind.dat
+    mkdir -p trophy2 uds || abort
+
+    local npbind_remote npbind_local=""
+    for npbind_remote in \
+      "${src_sys_meta}/trophy2/npbind.dat" \
+      "${src_sys_meta}/uds/npbind.dat"; do
+      if ftp_file_exists "$npbind_remote"; then
+        npbind_local=$(create_temp_file)
+        curl $curl_options --silent "$npbind_remote" > "$npbind_local" \
+          || curl_error "$npbind_remote"
+        break
+      fi
+    done
+
+    if [[ $npbind_local ]]; then
+      local npwr_id
+      npwr_id=$(read_npwr_id "$npbind_local")
+
+      if [[ $npwr_id ]]; then
+        echo "NPWR ID: $npwr_id"
+
+        local src_trophy="$root/user/trophy2/nobackup/conf/$npwr_id/TROPHY.UCP"
+        if ftp_file_exists "$src_trophy"; then
+          echo "Copying trophy: $src_trophy"
+          dump_file "$src_trophy"
+          mv TROPHY.UCP trophy2/trophy00.ucp || abort
+        else
+          warning_message "Trophy file not found: $src_trophy"
+        fi
+
+        local src_uds="$root/user/np_uds/nobackup/conf/$npwr_id/uds.ucp"
+        if ftp_file_exists "$src_uds"; then
+          echo "Copying UDS: $src_uds"
+          dump_file "$src_uds"
+          mv uds.ucp uds/uds00.ucp || abort
+        else
+          warning_message "UDS file not found: $src_uds"
+        fi
+      else
+        warning_message "Failed to read NPWR ID from $npbind_remote"
+      fi
+    else
+      echo "npbind.dat not found in either location."
     fi
   fi
 
@@ -660,6 +798,10 @@ dump_patch_data() {
       dump_and_extract_pkg "$root/user/patch/$1/patch.pkg"
     elif ftp_file_exists "$root/mnt/ext0/user/patch/$1/patch.pkg"; then
       dump_and_extract_pkg "$root/mnt/ext0/user/patch/$1/patch.pkg"
+    elif ftp_file_exists "$root/mnt/ext1/user/patch/$1/patch.pkg"; then
+      dump_and_extract_pkg "$root/mnt/ext1/user/patch/$1/patch.pkg"
+    elif ftp_file_exists "$root/preinst2/patch/$1/app.pkg"; then
+      dump_and_extract_pkg "$root/preinst2/patch/$1/app.pkg"
     else
       abort "Could not find FTP file \"patch.pkg\"."
     fi
@@ -680,106 +822,54 @@ dump_dlc_data() {
 
   [[ $debug ]] && debug_message "Checking if DLC data exists."
   while read line; do
-    if [[ $line == d*$1*-ac ]]; then
+    if [[ $line =~ ^d.*[A-Z0-9]+$ ]]; then
       [[ $debug ]] && debug_message "Found DLC directory ${line##* }"
       dlc_dirs+="${line##* } "
     fi
-  done < <(curl $curl_options --silent "$root/mnt/sandbox/pfsmnt/")
+  done < <(curl $curl_options --silent "$root/user/addcont/$1/")
+
 
   if [[ $dlc_dirs ]]; then
     cd "$output_dir" || abort
     echo "Dumping $1 DLC data:"
     mkdir -p "$1-dlc" && cd "$1-dlc" || abort
     for dir in $dlc_dirs; do
+      if [ -d "$dir" ]; then
+        echo "DLC \"$dir\" already dumped, skipping."
+        continue
+      fi
+
+      content_id=$(curl $curl_options --silent "$root/mnt/sandbox/pfsmnt/" | grep "$dir" | grep -v "nest")
+      if [[ "$content_id" != "" ]]; then
+        content_id="${content_id##* }"
+        echo "Found mounted DLC dir with content ID \"$content_id\""
+      else
+        echo "Could not find mounted DLC dir for \"$dir\", skipping."
+        continue
+      fi
+
+      if ftp_file_exists "$root/user/addcont/$1/$dir/ac.pkg"; then
+        dlc_pkg="$root/user/addcont/$1/$dir/ac.pkg"
+      elif ftp_file_exists "$root/mnt/ext0/user/addcont/$1/$dir/ac.pkg"; then
+        dlc_pkg="$root/mnt/ext0/user/addcont/$1/$dir/ac.pkg"
+      else
+        echo "Could not find FTP file \"ac.pkg\" for \"$dir\", skipping."
+        continue
+      fi
+
       mkdir "$dir" && cd "$dir" || abort
-      dump_dir "$root/mnt/sandbox/pfsmnt/$dir/"
-      cd .. || abort
+      if [[ "$content_id" != "" ]]; then
+        dump_dir "$root/mnt/sandbox/pfsmnt/$content_id/"
+      fi
+
+      mkdir -p sce_sys && cd sce_sys || abort
+      dump_and_extract_pkg "$dlc_pkg"
+
+      cd ../.. || abort
     done
   else
     echo "No DLC data found for $1."
   fi
-}
-
-# Downloads all PKGs that have the Title ID(s) $@.
-dump_pkgs() {
-  local ftp_file
-  local title_id
-
-  for title_id in "$@"; do
-    if [[ $option_app ]]; then
-      for ftp_file in "$root/user/app/$title_id/app.pkg" \
-        "$root/mnt/ext0/user/app/$title_id/app.pkg"; do
-        if ftp_file_exists "$ftp_file"; then
-          cd "$output_dir" || abort
-          set_download_size "$ftp_file" mb
-          echo "Downloading $title_id app PKG ($download_size MB) ..."
-          mkdir -p "$title_id-app-pkg" && cd "$title_id-app-pkg" || abort
-          curl $curl_options $curl_resume $curl_verbose --progress-bar \
-            --remote-name "$ftp_file" || curl_error "$ftp_file"
-          ftp_file=
-          break;
-        fi
-      done
-      [[ $ftp_file ]] && echo "No app PKG found for $title_id."
-    fi
-
-    if [[ $option_patch ]]; then
-      for ftp_file in "$root/user/patch/$title_id/patch.pkg" \
-        "$root/mnt/ext0/user/patch/$title_id/patch.pkg"; do
-        if ftp_file_exists "$ftp_file"; then
-          cd "$output_dir" || abort
-          set_download_size "$ftp_file" mb
-          echo "Downloading $title_id patch PKG ($download_size MB) ..."
-          mkdir -p "$title_id-patch-pkg" && cd "$title_id-patch-pkg" || abort
-          curl $curl_options $curl_resume $curl_verbose --progress-bar \
-            --remote-name "$ftp_file" || curl_error "$ftp_file"
-          ftp_file=
-          break;
-        fi
-      done
-      [[ $ftp_file ]] && echo "No patch PKG found for $title_id."
-    fi
-
-    if [[ $option_dlc ]]; then
-      local dlc_dir
-
-      # Internal DLC
-      while read -r dlc_dir; do
-        ftp_file="$root/user/addcont/$title_id/$dlc_dir/ac.pkg"
-        if ftp_file_exists "$ftp_file"; then
-          cd "$output_dir" || abort
-          set_download_size "$ftp_file" mb
-          echo "Downloading $title_id DLC PKG \"$dlc_dir\" ($download_size MB) ..."
-          mkdir -p "$title_id-dlc-pkg" && cd "$title_id-dlc-pkg" || abort
-          mkdir -p "$dlc_dir" && cd "$dlc_dir" || abort
-          curl $curl_options $curl_resume $curl_verbose --progress-bar \
-            --remote-name "$ftp_file" || curl_error "$ftp_file"
-        else
-          echo "No DLC PKG found for DLC \"$dlc_dir\"."
-        fi
-      done < <(print_ftp_subdirectories "$root/user/addcont/$title_id/")
-
-      # External DLC
-      while read -r dlc_dir; do
-        ftp_file="$root/mnt/ext0/user/addcont/$title_id/$dlc_dir/ac.pkg"
-        if ftp_file_exists "$ftp_file"; then
-          cd "$output_dir" || abort
-          set_download_size "$ftp_file" mb
-          echo "Downloading $title_id DLC PKG \"$dlc_dir\" ($download_size MB) ..."
-          mkdir -p "$title_id-dlc-pkg" && cd "$title_id-dlc-pkg" || abort
-          mkdir -p "$dlc_dir" && cd "$dlc_dir" || abort
-          curl $curl_options $curl_resume $curl_verbose --progress-bar \
-            --remote-name "$ftp_file" || curl_error "$ftp_file"
-        else
-          echo "No DLC PKG found for DLC \"$dlc_dir\"."
-        fi
-      done < <(print_ftp_subdirectories "$root/mnt/ext0/user/addcont/$title_id/")
-
-      if [[ ! $dlc_dir ]]; then
-        echo "No DLC PKGs found for $title_id."
-      fi
-    fi
-  done
 }
 
 # PKG list: --------------------------------------------------------------------
@@ -876,13 +966,8 @@ pkg_list_append() {
   # Add PKG's title to line, if program sfo is available
   if [[ $sfo_path ]]; then
     local temp_param_file=$(create_temp_file)
-    local param_sfo_path
-    if [[ $external ]]; then
-      param_sfo="$root/mnt/ext0/$type/$title_id/param.sfo"
-    else
-      param_sfo="$root/system_data/priv/appmeta/$title_id/param.sfo"
-    fi
-    curl $curl_options --silent "$param_sfo" > "$temp_param_file"
+    curl $curl_options --silent "$root/system_data/priv/appmeta/$title_id/param.sfo" \
+      > "$temp_param_file"
     if [[ $? -eq 0 ]]; then
       # Add title
       line+="$("$sfo_path" -q title "$temp_param_file")"
@@ -1046,6 +1131,10 @@ read_string() {
 # $3: size
 # $4: output file name
 extract_pkg_file() {
+  if [[ $4 == "" ]]; then
+    warning_message "empty filename"
+    return 0
+  fi
   echo "Extracting $4"
   if [[ $4 == */* ]]; then # Create directory, if necessary
     mkdir -p "${4%/*}"
@@ -1127,7 +1216,7 @@ extract_pkg() {
 dump_and_extract_pkg() {
   local pkg_filename=${1##*/}
 
-  echo "Preparing extraction of $pkg_filename ..."
+  echo "Preparing extraction of $1 ..."
 
   # Test how much PKG data should be downloaded
   [[ $debug ]] && debug_message \
@@ -1462,6 +1551,7 @@ for ((i = 0; i < argc; i++)); do
       -s|--sflash|--sflash0) dump_sflash=1 ;;
       --shutdown) shutdown=1 ;;
       --use-pfs) pfs_extraction_enabled=1 ;;
+      -m|--minidump) minidump_enabled=1 ;;
       -v|--verbose)
         verbose=1
         curl_verbose=-v
@@ -1635,6 +1725,7 @@ curl_verbose=$curl_verbose, \
 wget_options=$wget_options, \
 wget_verbose=$wget_verbose, \
 pfs_extraction_enabled=$pfs_extraction_enabled, \
+minidump_enabled=$minidump_enabled, \
 sfo_path=$sfo_path"
 
 # Set FTP prefix
@@ -1691,6 +1782,14 @@ if [[ $reply == *GoldHEN*v2* ]]; then
   fi
 fi
 
+if ftp_file_exists "$root/first_img_writer.elf"; then
+  is_ps5=1
+fi
+
+if ftp_file_exists "$root/system_data/priv/appmeta/$short_id/param.json"; then
+  is_ps5_game=1
+fi
+
 # Print PKG list and quit (option --list)
 if [[ $option_list ]]; then
   list_pkgs "$list_sort_order"
@@ -1709,7 +1808,7 @@ if [[ $shutdown ]]; then
 fi
 
 # Check for KILL command support
-if [[ ! $goldhen_2_old && $reply != *hippie68* ]]; then
+if [[ ! $goldhen_2_old && ! $is_ps5 && $reply != *hippie68* ]]; then
   reply=$(curl --silent --verbose --head --quote KILL "$root" 2>&1)
   if [[ $? -eq 0 ]]; then
     if [[ $reply == *'< 200'* ]]; then
@@ -1771,7 +1870,7 @@ title_id=$(curl $curl_options --silent "$root/mnt/sandbox/pfsmnt/" \
   | grep -Eo -m1 '[A-Z]{4}[0-9]{5}-app0')
 title_id=${title_id%-app0}
 if [[ ! $title_id =~ ^[A-Z]{4}[0-9]{5}$ ]]; then
-  echo "Could not retrieve Title ID. Is the game started?" >&2
+  echo "Could not retrieve Title ID (result: $title_id). Is the game started?" >&2
   clean_exit 1
 fi
 
